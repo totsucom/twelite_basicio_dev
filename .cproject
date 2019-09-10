@@ -2,7 +2,7 @@
 <?fileVersion 4.0.0?><cproject storage_type_id="org.eclipse.cdt.core.XmlProjectDescriptionStorage">
 	<storageModule moduleId="org.eclipse.cdt.core.settings">
 		<cconfiguration id="cdt.managedbuild.config.gnu.cross.exe.release.1547978722.1280190682">
-			<storageModule buildSystemId="org.eclipse.cdt.managedbuilder.core.configurationDataProvider" id="cdt.managedbuild.config.gnu.cross.exe.release.1547978722.1280190682" moduleId="org.eclipse.cdt.core.settings" name="basic_code_Serial (RED)">
+			<storageModule buildSystemId="org.eclipse.cdt.managedbuilder.core.configurationDataProvider" id="cdt.managedbuild.config.gnu.cross.exe.release.1547978722.1280190682" moduleId="org.eclipse.cdt.core.settings" name="twelite_basicio_dev (RED)">
 				<externalSettings/>
 				<extensions>
 					<extension id="org.eclipse.cdt.core.GmakeErrorParser" point="org.eclipse.cdt.core.ErrorParser"/>
@@ -14,7 +14,7 @@
 				</extensions>
 			</storageModule>
 			<storageModule moduleId="cdtBuildSystem" version="4.0.0">
-				<configuration artifactName="${ProjName}" buildArtefactType="org.eclipse.cdt.build.core.buildArtefactType.exe" buildProperties="org.eclipse.cdt.build.core.buildType=org.eclipse.cdt.build.core.buildType.release,org.eclipse.cdt.build.core.buildArtefactType=org.eclipse.cdt.build.core.buildArtefactType.exe" cleanCommand="rm -rf" description="for TWELITE RED" id="cdt.managedbuild.config.gnu.cross.exe.release.1547978722.1280190682" name="basic_code_Serial (RED)" parent="cdt.managedbuild.config.gnu.cross.exe.release">
+				<configuration artifactName="${ProjName}" buildArtefactType="org.eclipse.cdt.build.core.buildArtefactType.exe" buildProperties="org.eclipse.cdt.build.core.buildType=org.eclipse.cdt.build.core.buildType.release,org.eclipse.cdt.build.core.buildArtefactType=org.eclipse.cdt.build.core.buildArtefactType.exe" cleanCommand="rm -rf" description="for TWELITE RED" id="cdt.managedbuild.config.gnu.cross.exe.release.1547978722.1280190682" name="twelite_basicio_dev (RED)" parent="cdt.managedbuild.config.gnu.cross.exe.release">
 					<folderInfo id="cdt.managedbuild.config.gnu.cross.exe.release.1547978722.1280190682." name="/" resourcePath="">
 						<toolChain id="cdt.managedbuild.toolchain.gnu.cross.exe.release.1342830853" name="Cross GCC" superClass="cdt.managedbuild.toolchain.gnu.cross.exe.release">
 							<targetPlatform archList="all" binaryParser="org.eclipse.cdt.core.ELF" id="cdt.managedbuild.targetPlatform.gnu.cross.906776520" isAbstract="false" osList="all" superClass="cdt.managedbuild.targetPlatform.gnu.cross"/>
@@ -48,7 +48,7 @@
 			<storageModule moduleId="org.eclipse.cdt.core.externalSettings"/>
 		</cconfiguration>
 		<cconfiguration id="cdt.managedbuild.config.gnu.cross.exe.release.1547978722.1280190682.44554370">
-			<storageModule buildSystemId="org.eclipse.cdt.managedbuilder.core.configurationDataProvider" id="cdt.managedbuild.config.gnu.cross.exe.release.1547978722.1280190682.44554370" moduleId="org.eclipse.cdt.core.settings" name="basic_code_Serial (BLUE)">
+			<storageModule buildSystemId="org.eclipse.cdt.managedbuilder.core.configurationDataProvider" id="cdt.managedbuild.config.gnu.cross.exe.release.1547978722.1280190682.44554370" moduleId="org.eclipse.cdt.core.settings" name="twelite_basicio_dev (BLUE)">
 				<externalSettings/>
 				<extensions>
 					<extension id="org.eclipse.cdt.core.GmakeErrorParser" point="org.eclipse.cdt.core.ErrorParser"/>
@@ -60,7 +60,7 @@
 				</extensions>
 			</storageModule>
 			<storageModule moduleId="cdtBuildSystem" version="4.0.0">
-				<configuration artifactName="${ProjName}" buildArtefactType="org.eclipse.cdt.build.core.buildArtefactType.exe" buildProperties="org.eclipse.cdt.build.core.buildType=org.eclipse.cdt.build.core.buildType.release,org.eclipse.cdt.build.core.buildArtefactType=org.eclipse.cdt.build.core.buildArtefactType.exe" cleanCommand="rm -rf" description="for TWELITE BLUE" id="cdt.managedbuild.config.gnu.cross.exe.release.1547978722.1280190682.44554370" name="basic_code_Serial (BLUE)" parent="cdt.managedbuild.config.gnu.cross.exe.release">
+				<configuration artifactName="${ProjName}" buildArtefactType="org.eclipse.cdt.build.core.buildArtefactType.exe" buildProperties="org.eclipse.cdt.build.core.buildType=org.eclipse.cdt.build.core.buildType.release,org.eclipse.cdt.build.core.buildArtefactType=org.eclipse.cdt.build.core.buildArtefactType.exe" cleanCommand="rm -rf" description="for TWELITE BLUE" id="cdt.managedbuild.config.gnu.cross.exe.release.1547978722.1280190682.44554370" name="twelite_basicio_dev (BLUE)" parent="cdt.managedbuild.config.gnu.cross.exe.release">
 					<folderInfo id="cdt.managedbuild.config.gnu.cross.exe.release.1547978722.1280190682.44554370." name="/" resourcePath="">
 						<toolChain id="cdt.managedbuild.toolchain.gnu.cross.exe.release.1430792502" name="Cross GCC" superClass="cdt.managedbuild.toolchain.gnu.cross.exe.release">
 							<targetPlatform archList="all" binaryParser="org.eclipse.cdt.core.ELF" id="cdt.managedbuild.targetPlatform.gnu.cross.516412075" isAbstract="false" osList="all" superClass="cdt.managedbuild.targetPlatform.gnu.cross"/>
@@ -95,23 +95,23 @@
 		</cconfiguration>
 	</storageModule>
 	<storageModule moduleId="cdtBuildSystem" version="4.0.0">
-		<project id="basic_code_Serial.cdt.managedbuild.target.gnu.cross.exe.1121696478" name="実行可能" projectType="cdt.managedbuild.target.gnu.cross.exe"/>
+		<project id="twelite_basicio_dev.cdt.managedbuild.target.gnu.cross.exe.1121696478" name="実行可能" projectType="cdt.managedbuild.target.gnu.cross.exe"/>
 	</storageModule>
 	<storageModule moduleId="org.eclipse.cdt.core.LanguageSettingsProviders"/>
 	<storageModule moduleId="refreshScope" versionNumber="2">
 		<configuration configurationName="Release">
-			<resource resourceType="PROJECT" workspacePath="/basic_code_Serial"/>
+			<resource resourceType="PROJECT" workspacePath="/twelite_basicio_dev"/>
 		</configuration>
-		<configuration configurationName="basic_code_Serial (Regular, Strong)">
-			<resource resourceType="PROJECT" workspacePath="/basic_code_Serial"/>
+		<configuration configurationName="twelite_basicio_dev (Regular, Strong)">
+			<resource resourceType="PROJECT" workspacePath="/twelite_basicio_dev"/>
 		</configuration>
-		<configuration configurationName="basic_code_Serial (BLUE)"/>
-		<configuration configurationName="basic_code_Serial (RED)"/>
-		<configuration configurationName="basic_code_Serial (Lite)">
-			<resource resourceType="PROJECT" workspacePath="/basic_code_Serial"/>
+		<configuration configurationName="twelite_basicio_dev (BLUE)"/>
+		<configuration configurationName="twelite_basicio_dev (RED)"/>
+		<configuration configurationName="twelite_basicio_dev (Lite)">
+			<resource resourceType="PROJECT" workspacePath="/twelite_basicio_dev"/>
 		</configuration>
-		<configuration configurationName="basic_code_Serial (JN5148)"/>
-		<configuration configurationName="basic_code_Serial (JN5164)"/>
+		<configuration configurationName="twelite_basicio_dev (JN5148)"/>
+		<configuration configurationName="twelite_basicio_dev (JN5164)"/>
 	</storageModule>
 	<storageModule moduleId="org.eclipse.cdt.internal.ui.text.commentOwnerProjectMappings">
 		<doc-comment-owner id="org.eclipse.cdt.ui.doxygen">

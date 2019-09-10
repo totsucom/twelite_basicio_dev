@@ -50,19 +50,39 @@ bool_t dio_write(uint8_t pinNo, uint8_t value) {
  */
 
 //割り込みルーチンのポインタを保持
-void (*dioCallbackFunctions[20])();
+#ifndef MAX_DIO_INTERRUPT
+#define MAX_DIO_INTERRUPT 2
+#endif
+void (*dioCallbackFunctions[MAX_DIO_INTERRUPT])(uint32_t);  //コールバック関数のポインタ
+uint8_t dioCallbackPinNos[MAX_DIO_INTERRUPT];        //対応するピン番号0-19, 0xffで初期化
 
 //pinNO=0..19 funcは引数を持たない関数 mode=RISING(立ち上がり)/FALLING(立ち下がり)/DISABLE
 //一つのピンに一つの関数しか登録できない
-bool_t dio_attachCallback(uint8_t pinNo, void (*func)(), INTERRUPTIONEDGES mode) {
+bool_t dio_attachCallback(uint8_t pinNo, void (*func)(uint32_t u32DioBitmap), INTERRUPTIONEDGES mode) {
     if (mode == DISABLE) {
         return dio_detachCallback(pinNo);
     }
 
     if (pinNo > 19) return FALSE;
 
-    //処理ルーチンのポインタを登録
-    dioCallbackFunctions[pinNo] = func;
+    uint8_t i, freeIndex = 0xff;
+    for(i = 0; i < MAX_DIO_INTERRUPT; i++) {
+        if (dioCallbackPinNos[i] == pinNo) {
+            //処理ルーチンのポインタを上書き登録
+            dioCallbackFunctions[i] = func;
+            break;
+        } else if (freeIndex == 0xff && dioCallbackPinNos[i] == 0xff) {
+            //空きインデックスを記憶
+            freeIndex = i;
+        }
+    }
+    if (i == MAX_DIO_INTERRUPT) {
+        if (freeIndex == 0xff) return FALSE;    //空きが無い
+
+        //処理ルーチンのポインタを新規登録
+        dioCallbackFunctions[freeIndex] = func;
+        dioCallbackPinNos[freeIndex] = pinNo;
+    }
 
     //割り込みを有効にする
     vAHI_DioInterruptEnable(1UL << pinNo, 0);
@@ -81,13 +101,41 @@ bool_t dio_attachCallback(uint8_t pinNo, void (*func)(), INTERRUPTIONEDGES mode)
 bool_t dio_detachCallback(uint8_t pinNo) {
     if (pinNo > 19) return FALSE;
 
+    uint8_t i;
+    for(i = 0; i < MAX_DIO_INTERRUPT; i++) {
+        if (dioCallbackPinNos[i] == pinNo) break;
+    }
+    if (i == MAX_DIO_INTERRUPT) return FALSE; //登録されてない
+
     //処理ルーチンのポインタを削除
-    dioCallbackFunctions[pinNo] = NULL;
+    dioCallbackFunctions[i] = NULL;
+    dioCallbackPinNos[i] = 0xff;
 
     //割り込みを無効にする
     vAHI_DioInterruptEnable(0, 1UL << pinNo);
     return TRUE;
 }
+
+//DIOピンによるウェイクアップ pinNO=0..19 mode=RISING(立ち上がり)/FALLING(立ち下がり)/DISABLE
+//事前にpinModeをINPUTに設定しておくこと（スリープ中はINPUT_PULLUPは使えないので自前で準備すること）
+bool_t dio_setWake(uint8_t pinNo, INTERRUPTIONEDGES mode) {
+    if (pinNo > 19) return FALSE;
+
+    (void)u32AHI_DioInterruptStatus(); // clear interrupt register
+    if (mode != DISABLE) {
+        vAHI_DioWakeEnable(1UL << pinNo, 0); // enable ports
+        if (mode == RISING) {
+            vAHI_DioWakeEdge(1UL << pinNo, 0); // set edge (rising)
+        } else {
+            vAHI_DioWakeEdge(0, 1UL << pinNo); // set edge (falling)
+        }
+    } else {
+        vAHI_DioWakeEnable(0, 1UL << pinNo);
+    }
+    return TRUE;
+}
+
+
 
 
 /*
@@ -178,30 +226,6 @@ bool_t timer_detachCallback(uint8_t timerNo) {
 
 
 /*
- * スリープ
- */
-
-//DIOピンによるウェイクアップ pinNO=0..19 mode=RISING(立ち上がり)/FALLING(立ち下がり)/DISABLE
-//事前にpinModeをINPUTに設定しておくこと（スリープ中はINPUT_PULLUPは使えないので自前で準備すること）
-bool_t setDioWake(uint8_t pinNo, INTERRUPTIONEDGES mode) {
-    if (pinNo > 19) return FALSE;
-
-    (void)u32AHI_DioInterruptStatus(); // clear interrupt register
-    if (mode != DISABLE) {
-        vAHI_DioWakeEnable(1UL << pinNo, 0); // enable ports
-        if (mode == RISING) {
-            vAHI_DioWakeEdge(1UL << pinNo, 0); // set edge (rising)
-        } else {
-            vAHI_DioWakeEdge(0, 1UL << pinNo); // set edge (falling)
-        }
-    } else {
-        vAHI_DioWakeEnable(0, 1UL << pinNo);
-    }
-    return TRUE;
-}
-
-
-/*
  * シリアル
  */
 
@@ -210,6 +234,7 @@ bool_t setDioWake(uint8_t pinNo, INTERRUPTIONEDGES mode) {
 // FIFOキューや出力用の定義
 tsFILE sUartStream0;
 tsSerialPortSetup sUartPort0;
+tsUartOpt sUartOpt0;
 
 // 送信FIFOバッファ
 #ifndef SERIAL_TX_BUFFER_SIZE
@@ -230,6 +255,7 @@ uint8_t au8SerialRxBuffer0[SERIAL_RX_BUFFER_SIZE];
 
 tsFILE sUartStream1;
 tsSerialPortSetup sUartPort1;
+tsUartOpt sUartOpt1;
 
 // 送信FIFOバッファ
 #ifndef SERIAL1_TX_BUFFER_SIZE
@@ -250,7 +276,7 @@ uint8_t au8SerialRxBuffer1[SERIAL1_RX_BUFFER_SIZE];
 //Serial0,1共通関数を定義
 
 //定数 SERIAL_BAUD_115200 などを渡すこと
-bool_t serialx_init(uint8_t u8SerialPort, BAUDRATES baudRate, tsFILE *psUartStream, tsSerialPortSetup *psUartPort) {
+bool_t serialx_init(uint8_t u8SerialPort, BAUDRATES baudRate, tsFILE *psUartStream, tsSerialPortSetup *psUartPort, tsUartOpt *psUartOpt) {
     if (u8SerialPort != E_AHI_UART_0 && u8SerialPort != E_AHI_UART_1) return FALSE;
     if ((baudRate & 0x80000000) == 0) return FALSE;
 
@@ -263,7 +289,15 @@ bool_t serialx_init(uint8_t u8SerialPort, BAUDRATES baudRate, tsFILE *psUartStre
     psUartPort->u16SerialTxQueueSize = sizeof(au8SerialTxBuffer0);
     psUartPort->u8SerialPort = u8SerialPort; //E_AHI_UART_0;
     psUartPort->u8RX_FIFO_LEVEL = E_AHI_UART_FIFO_LEVEL_1;
-    SERIAL_vInit(psUartPort);
+
+    psUartOpt->bHwFlowEnabled = FALSE; // TRUE, FALSE
+	psUartOpt->bParityEnabled = FALSE; // TRUE, FALSE
+	//psUartOpt->u8ParityType; // E_AHI_UART_EVEN_PARITY, E_AHI_UART_ODD_PARITY
+	psUartOpt->u8StopBit = E_AHI_UART_1_STOP_BIT; // E_AHI_UART_1_STOP_BIT, E_AHI_UART_2_STOP_BIT
+	psUartOpt->u8WordLen = 8; // 5-8 を指定 (E_AHI_UART_WORD_LEN_? は指定しない)
+
+    vAHI_UartSetRTSCTS(u8SerialPort, FALSE);
+    SERIAL_vInitEx(psUartPort, psUartOpt);
 
     psUartStream->bPutChar = SERIAL_bTxChar;
     psUartStream->u8Device = u8SerialPort; //E_AHI_UART_0;
@@ -281,23 +315,43 @@ bool_t serialx_forDebug(tsFILE *psUartStream, uint8_t debugLevel) {
 
 bool_t serialx_write(uint8_t u8SerialPort, uint8_t *pu8Data, uint8_t length)
 {
-    bool_t bResult = TRUE;
+    if (u8SerialPort != E_AHI_UART_0 && u8SerialPort != E_AHI_UART_1) return FALSE;
 
-    while(length > 0)
+    while(length-- > 0)
     {
-        if (SERIAL_bTxChar(u8SerialPort, *pu8Data))
-        {
-            pu8Data++;
-        }
-        else
-        {
-            bResult = FALSE;
-            break;
-        }
-        length--;
+        if (!SERIAL_bTxChar(u8SerialPort, *pu8Data)) return FALSE;
+        pu8Data++;
     }
-    return bResult;
+    return TRUE;
 }
+
+int16_t serialx_readUntil(uint8_t u8SerialPort, uint8_t u8Terminate, uint8_t *pu8Buffer, uint16_t u16BufferLength) {
+    int16_t len = 0;
+    while (u16BufferLength > 0) {
+        if (*pu8Buffer == '\0') break;
+        pu8Buffer++;
+        u16BufferLength--;
+        len++;
+    }
+    if (u16BufferLength == 0) return -1; //Buffer not initialized. (Not found null terminate)
+
+    while (u16BufferLength > 1 && !SERIAL_bRxQueueEmpty(u8SerialPort)) {
+        int16_t c = SERIAL_i16RxChar(u8SerialPort);
+        if (c < 0) return -1; //Error
+
+        *pu8Buffer++ = c;
+        u16BufferLength--;
+        len++;
+
+        if (c == u8Terminate) {
+            *pu8Buffer = '\0';
+            return len;
+        }
+    }
+    *pu8Buffer = '\0';
+    return (u16BufferLength == 1) ? len : 0;
+}
+
 #endif //USE_SERIAL || USE_SERIAL1
 
 
@@ -340,7 +394,7 @@ void adc_disable() {
     }
 }
 
-//contiuous=TRUE:連続,FALSE:1SHOT  range2=TRUE:0～Vref[V],FALSE:0～2*Vref[V] *Vrefは約1.235V
+//contiuous=TRUE:連続,FALSE:1SHOT  range2=FALSE:0～Vref[V],TRUE:0～2*Vref[V] *Vrefは約1.235V
 //ADC_SOURCE_3,4はそれぞれDIO0,1と共用
 void adc_attachCallback(bool_t continuous, bool_t range2, ADCSOURCES source, void (*func)(uint16_t rawData, int16_t adcResult)) {
 
@@ -370,10 +424,10 @@ void adc_attachCallback(bool_t continuous, bool_t range2, ADCSOURCES source, voi
 void adc_detachCallback()  {
     adcCallbackFunction = NULL;
 
-    if (adcIsContinuous) {
-        //コンティニュアスモードの場合は停止
-        vAHI_AdcDisable();
-    }
+    //if (adcIsContinuous) {
+    //    //コンティニュアスモードの場合は停止
+    //    vAHI_AdcDisable();
+    //}
 }
 
 
@@ -597,10 +651,10 @@ void radio_attachRxCallback(void (*func)(uint32_t u32SrcAddr, uint8_t u8CbId, ui
 //無線で特定の相手に送信する
 //basicio_module.hで送信モジュールと同じAPP_ID,CHANNELに設定し、RX_ON_IDLE=TRUEとしたモジュールかつ、関数の引数でu32DistAddrに指定したモジュールが受信できる
 //u32DestAddr=相手のモジュールアドレス。事前にSerial0_printf("%u", moduleAddress)等を実行してTWELITE毎のモジュールアドレスを知っておくとよい
-//pu8Data=データ, u8Length=データ長さ(最大108バイト), u8DataType=データの簡易識別番号(0..7), u8NumRetrySend=送信失敗時の再送回数
+//pu8Data=データ, u8Length=データ長さ(最大108バイト), u8DataType=データの簡易識別番号(0..7)
 //簡易識別番号は受け取り側が何のデータか知るために使う。使用しない場合は値はなんでもよい
 //関数はエラーで-1、送信開始で8bitの送信Id(u8CbId)を返す。これは送信完了コールバックで送信データの識別に使用される。
-int16_t radio_write(uint32_t u32DestAddr, uint8_t *pu8Data, uint8_t u8Length, uint8_t u8DataType, uint8_t u8NumRetrySend)
+int16_t radio_write(uint32_t u32DestAddr, uint8_t *pu8Data, uint8_t u8Length, uint8_t u8DataType)
 {
     if (u8Length > 108) return -1;
 
@@ -609,7 +663,7 @@ int16_t radio_write(uint32_t u32DestAddr, uint8_t *pu8Data, uint8_t u8Length, ui
     tsTxDataApp tsTx;
     memset(&tsTx, 0, sizeof(tsTxDataApp));
 
-    tsTx.u32SrcAddr = moduleAddress();                //送信元アドレス
+    tsTx.u32SrcAddr = moduleAddress();              //送信元アドレス
     tsTx.u32DstAddr = u32DestAddr;                  //送信先アドレス
 
 	tsTx.u8Cmd = u8DataType;                        //データ種別 (0..7)。データの簡易識別子。
@@ -619,7 +673,10 @@ int16_t radio_write(uint32_t u32DestAddr, uint8_t *pu8Data, uint8_t u8Length, ui
     memcpy(tsTx.auData, pu8Data, u8Length);
 
 	tsTx.bAckReq = (u32DestAddr != TOCONET_MAC_ADDR_BROADCAST); //TRUE Ack付き送信を行う
-	tsTx.u8Retry = u8NumRetrySend; 		            //MACによるAck付き送信失敗時に、さらに再送する場合(ToCoNet再送)の再送回数
+#ifndef TX_RETRY
+#define TX_RETRY 2
+#endif
+	tsTx.u8Retry = TX_RETRY;    		            //MACによるAck付き送信失敗時に、さらに再送する場合(ToCoNet再送)の再送回数
 
 	//tsTx.u16ExtPan = 0;                           //0:外部PANへの送信ではない 1..0x0FFF: 外部PANへの送信 (上位4bitはリザーブ)
 
@@ -641,7 +698,7 @@ int16_t radio_write(uint32_t u32DestAddr, uint8_t *pu8Data, uint8_t u8Length, ui
 }
 
 
-//radio_sendTo()の簡易版
+//radio_write()の簡易版
 //関数はエラーで-1、送信開始で8bitの送信Id(u8CbId)を返す。これは送信完了コールバックで送信データの識別に使用される
 int16_t radio_puts(uint32_t u32DestAddr, uint8_t *pu8String)
 {
@@ -653,8 +710,8 @@ int16_t radio_puts(uint32_t u32DestAddr, uint8_t *pu8String)
     tsTxDataApp tsTx;
     memset(&tsTx, 0, sizeof(tsTxDataApp));
 
-    tsTx.u32SrcAddr = moduleAddress();                //送信元アドレス
-    tsTx.u32DstAddr = TOCONET_MAC_ADDR_BROADCAST;   //送信先アドレス
+    tsTx.u32SrcAddr = moduleAddress();              //送信元アドレス
+    tsTx.u32DstAddr = u32DestAddr;                  //送信先アドレス
 
 	tsTx.u8Cmd = 0;                                 //データ種別 (0..7)。データの簡易識別子。
 	tsTx.u8Seq = u8RadioSeqNo; 		                //シーケンス番号(複数回送信時に、この番号を調べて重複受信を避ける)
@@ -684,7 +741,7 @@ int16_t radio_puts(uint32_t u32DestAddr, uint8_t *pu8String)
     }
 }
 
-//radio_sendTo()のprintf版
+//radio_write()のprintf版
 uint16_t radio_printf(uint32_t u32DestAddr, const char* format, va_list args) {
     SPRINTF_vRewind();
     vfPrintf(SPRINTF_Stream, format, args);
@@ -707,13 +764,22 @@ uint16_t radio_printf(uint32_t u32DestAddr, const char* format, va_list args) {
 #ifdef USE_FLASH
 #define FLASH_TYPE E_FL_CHIP_INTERNAL
 #define FLASH_SECTOR_SIZE (32L* 1024L) // 32KB
-//#define FLASH_SECTOR_NUMBER 5 // 0..4:BLUE 0..15:RED
+
+#ifdef TWELITE_BLUE
+#define FLASH_LAST_SECTOR   4   //BLUE
+#else
+#define FLASH_LAST_SECTOR   15  //RED
+#endif
 
 
 //sector=0..4(BLUE)/0..15(RED)。プログラムはセクタ0から書き込まれるので、使用していないセクタに書き込むこと
 //flash_write()はビットを1から0にしか書き換えられないので、この関数により消去(ビットを1にする)した部分にしか書き込めない
 bool_t flash_erase(uint8_t sector)
 {
+#ifdef FLASH_LAST_SECTOR
+    if (sector > FLASH_LAST_SECTOR) return FALSE;
+#endif
+
     if (!bAHI_FlashInit(FLASH_TYPE, NULL)) return FALSE;
     return bAHI_FlashEraseSector(sector);
 }
@@ -725,6 +791,12 @@ bool_t flash_erase(uint8_t sector)
 //事前にflash_erase()で領域をフォーマットしておくこと
 bool_t flash_write(uint8_t sector, uint32_t offset, uint8_t *pu8Data, uint16_t u16DataLength)
 {
+    if ((offset & 15) != 0) return FALSE;
+    if (offset + u16DataLength > FLASH_SECTOR_SIZE) return FALSE;
+#ifdef FLASH_LAST_SECTOR
+    if (sector > FLASH_LAST_SECTOR) return FALSE;
+#endif
+
     offset += (uint32)sector * FLASH_SECTOR_SIZE;
 
     if (!bAHI_FlashInit(FLASH_TYPE, NULL)) return FALSE;
@@ -735,15 +807,18 @@ bool_t flash_write(uint8_t sector, uint32_t offset, uint8_t *pu8Data, uint16_t u
     return bAHI_FullFlashProgram(offset, u16DataLength, pu8Data);
 }
 
+//MAGIC_NUMBERとCRC8の２つの方法でデータが書き込んだものと同じであることを確認している  
 bool_t flash_read(uint8 sector, uint32 offset, uint8_t *pu8Data, uint16_t u16DataLength)
 {
+    if (offset + u16DataLength > FLASH_SECTOR_SIZE) return FALSE;
+
     offset += (uint32)sector * FLASH_SECTOR_SIZE;
 
     if (!bAHI_FlashInit(FLASH_TYPE, NULL)) return FALSE;
     if (!bAHI_FullFlashRead(offset, u16DataLength, pu8Data)) return FALSE;
 
     if (*pu8Data != 0xE7) return FALSE;                                             //MAGIC_NUMBER
-    if (*(pu8Data + 1) != u8CCITT8(pu8Data + 2, u16DataLength - 2)) return FALSE;    //CRC8
+    if (*(pu8Data + 1) != u8CCITT8(pu8Data + 2, u16DataLength - 2)) return FALSE;   //CRC8
 
     return TRUE;
 }
@@ -777,13 +852,16 @@ static void vProcessEvCore(tsEvent *pEv, teEvent eEvent, uint32_t u32evarg)
     }
 }
 
+#ifdef USE_RADIO
 static uint32_t u32SrcAddrPrev;
 static uint8_t u8seqPrev;
+#endif
 
 //変数や構造体を初期化
 void resetVars()
 {
     memset(dioCallbackFunctions, 0, sizeof(dioCallbackFunctions));
+    memset(dioCallbackPinNos, 0xff, sizeof(dioCallbackPinNos));
 
 #ifdef USE_TIMER
     memset(timerCallbackFunctions, 0, sizeof(timerCallbackFunctions));
@@ -836,7 +914,8 @@ void initAppContext()
 	//bool_t bNoAckMode;			//!< Ack を一切返さない。起動時の設定のみ反映され、起動後は変更できない。(通常は変更しない)
 	//bool_t bRxExtPan;			//!< 他のPANからのパケットを受信する (1.0.8)
 
-	//uint8 u8RandMode; 			//!< 乱数生成方法の指定。0:ハード 1:システム経過時間を元に生成 2:MT法 3:XorShift法 (32kOscモードで外部水晶が利用されたときは 0 の場合 XorShift 方を採用する)
+	sToCoNet_AppContext.u8RandMode = 3; //!< 乱数生成方法の指定。0:ハード 1:システム経過時間を元に生成 2:MT法 3:XorShift法 (32kOscモードで外部水晶が利用されたときは 0 の場合 XorShift 方を採用する)
+                                //※ハードウェア乱数では同一ループ内では同じ値しか生成できない。MT法は高品質だがライセンス表記必要。    
 #ifndef TICK_COUNT
 #define TICK_COUNT  250
 #endif
@@ -845,6 +924,7 @@ void initAppContext()
 }
 
 //ToCoNet_REG_MOD_ALL()を展開
+//詳細がわからないので動作確認＆予想で削っている
 void regMod() {
 
     //チャネルの入力レベルを測定します
@@ -857,9 +937,10 @@ void regMod() {
     //乱数生成アルゴリズムを登録。登録しない場合はハードウェア乱数を使用
     //ToCoNet_REG_MOD_MTRAND(); //MT法を使用する場合はライセンス表記が必要
     //ToCoNet_REG_MOD_RAND_XOR_SHIFT();
+    ToCoNet_vReg_mod_Rand_Xor_Shift();
 
 #ifdef USE_RADIO
-    //送信キューを確保する(はず)
+    //送受信キューを確保する(はず)
     ToCoNet_REG_MOD_TXRXQUEUE();
 
     //レイヤーツリー型ネットワーク層を利用します
@@ -908,12 +989,6 @@ void cbAppColdStart(bool_t bAfterAhiInit)
         //イベントハンドラを登録
         ToCoNet_Event_Register_State_Machine(vProcessEvCore);
 
-/*
-        vAHI_TickTimerConfigure(E_AHI_TICK_TIMER_DISABLE);
-        vAHI_TickTimerWrite(0);
-        vAHI_TickTimerInterval(250);//sToCoNet_AppContext.u16TickHz);
-        vAHI_TickTimerConfigure(E_AHI_TICK_TIMER_CONT);
-*/
         //ユーザーの初期化ルーチンを呼び出す
         setup(FALSE, dioWakeStatus);
 
@@ -1041,13 +1116,22 @@ void cbToCoNet_vHwEvent(uint32_t u32DeviceId, uint32_t u32ItemBitmap)
     case E_AHI_DEVICE_SYSCTRL:
         //DIO割り込み処理ルーチンの呼び出し
         _C {
-            uint32_t b = 1;
-            uint8_t pinNo;
-            for(pinNo = 0; pinNo < 20; pinNo++) {
-                if ((u32ItemBitmap & b) && dioCallbackFunctions[pinNo] != NULL) {
-                    (*dioCallbackFunctions[pinNo])();
+            u32ItemBitmap &= 0xfffff;
+            if (u32ItemBitmap) {
+                uint32_t b = 1;
+                uint8_t pinNo;
+                for(pinNo = 0; pinNo < 20; pinNo++) {
+                    if (u32ItemBitmap & b) { //DIO番号に対応するビットが1になっている
+                        uint8_t i;
+                        for(i = 0; i < MAX_DIO_INTERRUPT; i++) {
+                            if (dioCallbackPinNos[i] == pinNo && dioCallbackFunctions[i] != NULL) {
+                                (*dioCallbackFunctions[i])(u32ItemBitmap);
+                                break;
+                            }                       
+                        }
+                    }
+                    b <<= 1;
                 }
-                b <<= 1;
             }
         }
         break;
@@ -1101,12 +1185,14 @@ uint8_t cbToCoNet_u8HwInt(uint32_t u32DeviceId, uint32_t u32ItemBitmap)
 {
     //割り込みで最初に呼ばれる。最短で返さないといけない。
 
-    //注)ここで目的の割り込み処理を実行したときだけTRUEを返すようにすること。
-    //  常にTRUEを返すと固まる!!
+    //注)ここで目的の割り込み処理を実行したときだけTRUEを返すことで
+    //　cbToCoNet_vHwEvent()の呼び出しを無効化できる
 
     if (u32DeviceId == E_AHI_DEVICE_TICK_TIMER) {
-        //u32AHI_TickTimerRead()がうまく値を返してくれないのでここでカウント        ←←←←←←←←←←←←←←←←←←←←解明すること！
+        //u32AHI_TickTimerRead()がうまく値を返してくれない(仕様?)のでここでカウント
         millisValue += millisValueTick;
+
+        //E_AHI_DEVICE_TICK_TIMERは例外的にTRUEを返してはいけない (固まる)
     }
 
 	return FALSE;//FALSEによりcbToCoNet_vHwEvent()が呼ばれる

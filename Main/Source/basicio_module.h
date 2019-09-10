@@ -1,5 +1,9 @@
 
 
+/* デジタルIO(割り込み) オプション */
+//#define MAX_DIO_INTERRUPT 2       //DIO割り込みルーチンが登録できる最大のピン数(最大20(DIOピンは20本))(規定値:2)
+
+
 /* タイマー／ＰＷＭ 機能 */
 //#define USE_TIMER
 
@@ -29,15 +33,17 @@
 #define APP_ID      0x67720103  //無線通信するうえで、そのグループは同じ値APP_IDを設定すること
                                 //有効なAPP_IDの範囲。0xHHHHLLLLの場合、HHHH,LLL共に0x0001～0x7FFF
 #define CHANNEL     18          //無線通信するうえで、そのグループは同じ値CHANNELを設定すること
-#define RX_ON_IDLE  TRUE        //無線受信を行う場合はTRUEにする
+#define RX_ON_IDLE  FALSE       //無線受信を行う場合はTRUEにする
 
 /* 無線通信 オプション */
-//#define TX_POWER    3         //無線送信出力の設定。 3:最大 2: -11.5db 2: -23db 0:-34.5db となる (規定値は 3)
+//#define TX_POWER    3         //無線送信出力の設定。 3:最大 2: -11.5db 1: -23db 0:-34.5db となる (規定値:3)
+//#define TX_RETRY    2         //相手にデータが届かない場合、リトライ送信する回数 (規定値:2)
+                                //ブロードキャスト送信の場合は常に(TX_RETRY+1)回の送信が実行される
 
 //送信キューのサイズを決定します。SMALLは送信用で 3ヶ、MIDは6ヶ、BIGは20ヶのキューを確保します。
 //パケット分割を行うような一度に多くのパケットを連続的に送信する場合はBIGを指定します。
 //１ヶあたり約128バイトのメモリを消費し、未定義時は MID となります。
-#define ToCoNet_USE_MOD_TXRXQUEUE_SMALL
+//#define ToCoNet_USE_MOD_TXRXQUEUE_SMALL
 //#define ToCoNet_USE_MOD_TXRXQUEUE_MID
 //#define ToCoNet_USE_MOD_TXRXQUEUE_BIG
 

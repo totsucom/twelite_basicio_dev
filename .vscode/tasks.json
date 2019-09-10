@@ -3,7 +3,7 @@
     "version": "2.0.0",
     "tasks": [
 	 {
-            "label": "Build basic_code_Serial,Main (BLUE)",
+            "label": "Build twelite_basicio_dev,Main (BLUE)",
             "type": "shell",
             "windows": {
                 "command": "make",
@@ -26,7 +26,7 @@
             "options": { "cwd": "${workspaceRoot}/Main/Build" }
         }
 	, {
-            "label": "Build basic_code_Serial,Main (RED)",
+            "label": "Build twelite_basicio_dev,Main (RED)",
             "type": "shell",
             "windows": {
                 "command": "make",
