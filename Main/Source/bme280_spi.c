@@ -1,7 +1,7 @@
 #include "basicio.h"
-#include "bme280_i2c.h"
+#include "bme280_spi.h"
 
-static uint8_t bme280_address; // SDO:GND=0x76 / SDO:VCC=0x77
+static uint8_t bme280_slaveNo; // 0..2
 
 static signed long int t_fine;
 static uint16_t dig_T1;
@@ -23,18 +23,12 @@ static int16_t dig_H4;
 static int16_t dig_H5;
 static int8_t  dig_H6;
 
-static bool_t readTrim()
+static void readTrim()
 {
     uint8_t data[32];
-    if (!i2c_read(bme280_address, 0x88, data, 24)) return FALSE;
-    //8e 6e a1 66 32 00 3d 93 22 d6 d0 0b
-    //b8 22 1e ff f9 ff 0c 30 20 d1 88 13
-
-    if (!i2c_read(bme280_address, 0xA1, &data[24], 1)) return FALSE;
-    //4b
-
-    if (!i2c_read(bme280_address, 0xE1, &data[25], 7)) return FALSE;
-    //65 01 00 14 2c 03 1e 
+    spi_read(bme280_slaveNo, 0x88 | 0x80, data, 24);
+    data[24] = spi_readByte(bme280_slaveNo, 0xA1 | 0x80);
+    spi_read(bme280_slaveNo, 0xE1 | 0x80, &data[25], 7);
     
     dig_T1 = (data[1] << 8) | data[0];
     dig_T2 = (data[3] << 8) | data[2];
@@ -54,13 +48,11 @@ static bool_t readTrim()
     dig_H4 = (data[28]<< 4) | (0x0F & data[29]);
     dig_H5 = (data[30] << 4) | ((data[29] >> 4) & 0x0F);
     dig_H6 = data[31];
-    return TRUE;
 }
 
 //センサーの初期化。最初に１回だけ呼び出す
-//アドレス SDO:GND=0x76 / SDO:VCC=0x77
-bool_t bme280_init(uint8_t u8Address) {
-    bme280_address = u8Address;
+void bme280_init(uint8_t u8SlaveNo) {
+    bme280_slaveNo = u8SlaveNo;
 
     //int16_t r = i2c_readByte(bme280_address, 0xd0);
     //if (r == -1 || r != 0x60) return FALSE;    //Not BME280
@@ -77,11 +69,10 @@ bool_t bme280_init(uint8_t u8Address) {
     uint8_t config_reg    = (t_sb << 5) | (filter << 2) | spi3w_en;
     uint8_t ctrl_hum_reg  = osrs_h;
 
-    if (!i2c_writeByte(bme280_address, 0xF2, ctrl_hum_reg)) return FALSE;
-    if (!i2c_writeByte(bme280_address, 0xF4, ctrl_meas_reg)) return FALSE;
-    if (!i2c_writeByte(bme280_address, 0xF5, config_reg)) return FALSE;
-    if (!readTrim()) return FALSE;
-    return TRUE;
+    spi_writeByte(bme280_slaveNo, 0xF2 & 0x7F, ctrl_hum_reg);
+    spi_writeByte(bme280_slaveNo, 0xF4 & 0x7F, ctrl_meas_reg);
+    spi_writeByte(bme280_slaveNo, 0xF5 & 0x7F, config_reg);
+    readTrim();
 }
 
 static signed long int calibration_T(signed long int adc_T)
@@ -137,30 +128,23 @@ static unsigned long int calibration_H(signed long int adc_H)
 //フォースモードが完了したらスリープに入るので
 //この関数がTRUEならbme280_readData()で値を取り出せる
 bool_t bme280_sleeping() {
-    int16_t r = i2c_readByte(bme280_address, 0xf4);
-    if (r == -1) return FALSE;
-    return ((r & 3) == 0);
+    return ((spi_readByte(bme280_slaveNo, 0xf4) & 3) == 0);
 }
 
 //温度、気圧、湿度はx100の値が返される
-bool_t bme280_readData(signed long int *pTemp, unsigned long int *pPres, unsigned long int *pHumi)
+void bme280_readData(signed long int *pTemp, unsigned long int *pPres, unsigned long int *pHumi)
 {
     unsigned long int humi_raw,temp_raw,pres_raw;
-    uint32_t data[8];
-    uint8_t i;
+    uint8_t data[8];
 
-    if (!i2c_write(bme280_address, 0xF7, NULL, 0)) return FALSE;
-    for (i=0; i<8; i++) {
-        data[i] = i2c_readByteOnly(bme280_address);
-    }
+    spi_read(bme280_slaveNo, 0xF7 | 0x80, data, 8);
 
-    pres_raw = (data[0] << 12) | (data[1] << 4) | (data[2] >> 4);
-    temp_raw = (data[3] << 12) | (data[4] << 4) | (data[5] >> 4);
-    humi_raw  = (data[6] << 8) | data[7];
+    pres_raw = ((uint32_t)data[0] << 12) | ((uint32_t)data[1] << 4) | ((uint32_t)data[2] >> 4);
+    temp_raw = ((uint32_t)data[3] << 12) | ((uint32_t)data[4] << 4) | ((uint32_t)data[5] >> 4);
+    humi_raw  = ((uint32_t)data[6] << 8) | (uint32_t)data[7];
 
     *pTemp = calibration_T(temp_raw);
     *pPres = calibration_P(pres_raw);
     *pHumi = calibration_H(humi_raw);
-    return TRUE;
 }
 
