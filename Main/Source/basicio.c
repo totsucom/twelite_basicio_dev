@@ -54,10 +54,6 @@ void pb_reset() {
     memset(u8PBDelayCount, 0, sizeof(u8PBDelayCount));
 }
 
-#ifndef PB_JUDGE_COUNT
-#define PB_JUDGE_COUNT 5
-#endif
-
 static void pb_update() {
     uint32_t diffBits = (u32AHI_DioReadInput() ^ u32PBPositive) ^ u32PBCurIOStatus;
     uint8_t i;
@@ -171,9 +167,6 @@ bool_t dio_write(uint8_t pinNo, uint8_t value) {
  */
 
 //割り込みルーチンのポインタを保持
-#ifndef MAX_DIO_INTERRUPT
-#define MAX_DIO_INTERRUPT 2
-#endif
 void (*dioCallbackFunctions[MAX_DIO_INTERRUPT])(uint32_t);  //コールバック関数のポインタ
 uint8_t dioCallbackFuncIndices[20];        //ピン番号0-19に対するdioCallbackFunctions[]のインデックスを保持, 0xffで初期化
 
@@ -623,137 +616,350 @@ void timer0_attachCounter(uint8_t prescale, uint16_t count, bool_t bUseSecondPin
  * シリアル
  */
 
-#ifdef USE_SERIAL
+#if defined(USE_SERIAL) && defined(SERIAL_HW_FLOW_CONTROL)
+//キュー関数
 
-// FIFOキューや出力用の定義
-tsFILE sUartStream0;
-tsSerialPortSetup sUartPort0;
-tsUartOpt sUartOpt0;
+typedef struct {
+    uint8_t             *pau8Buff;
+    volatile uint16_t   u16BuffSize;
+    volatile uint16_t   u16DataSize;
+    volatile uint16_t   u16WriteIndex;
+    volatile uint16_t   u16ReadIndex;
+    volatile bool_t     bDataLost;
+   	volatile uint32_t   u32InterruptStore;
+} BYTEQUE;
 
-// 送信FIFOバッファ
-#ifndef SERIAL_TX_BUFFER_SIZE
-#define SERIAL_TX_BUFFER_SIZE 96
-#endif
-uint8_t au8SerialTxBuffer0[SERIAL_TX_BUFFER_SIZE]; 
-
-// 受信FIFOバッファ
-#ifndef SERIAL_RX_BUFFER_SIZE
-#define SERIAL_RX_BUFFER_SIZE 32
-#endif
-uint8_t au8SerialRxBuffer0[SERIAL_RX_BUFFER_SIZE]; 
-
+static void que_init(BYTEQUE *psQue, uint8_t *pau8Buff, uint16_t u16BuffSize) {
+    psQue->pau8Buff = pau8Buff;
+    psQue->u16BuffSize = u16BuffSize;
+    psQue->u16DataSize = 0;
+    psQue->u16WriteIndex = 0;
+    psQue->bDataLost = FALSE;
+    psQue->u16ReadIndex = 0;
+}
 /*
-bool_t serial_printf(const char* format, ...) {
-    va_list args;
-    va_start(args, format);
+#define que_disableInterrupts(que)      MICRO_DISABLE_AND_SAVE_INTERRUPTS((que)->u32InterruptStore)
 
+#define que_restoreInterrupts(que)      MICRO_RESTORE_INTERRUPTS((que)->u32InterruptStore)
+*/
+#define que_getCount(que)               ((que)->u16DataSize)
+
+#define que_bufferEmpty(que)            ((que)->u16DataSize == 0)
+
+#define que_bufferFull(que)             ((que)->u16DataSize == (que)->u16BuffSize)
+
+static bool_t que_dataLost(BYTEQUE *psQue) {
+    bool_t b = psQue->bDataLost;
+    psQue->bDataLost = FALSE;
+    return b;
+}
+
+static void que_append(BYTEQUE *psQue, uint8_t byte) {
+    if (psQue->u16DataSize < psQue->u16BuffSize) {
+        *(psQue->pau8Buff + psQue->u16WriteIndex) = byte;
+        if (++(psQue->u16WriteIndex) >= psQue->u16BuffSize) psQue->u16WriteIndex -= psQue->u16BuffSize;
+        psQue->u16DataSize++;
+    } else {
+        psQue->bDataLost = TRUE;
+    }
+}
+
+static int16_t que_get(BYTEQUE *psQue) {
+    if (psQue->u16DataSize == 0) return -1;
+
+    int8_t byte = *(psQue->pau8Buff + psQue->u16ReadIndex);
+    if (++(psQue->u16ReadIndex) >= psQue->u16BuffSize) psQue->u16ReadIndex -= psQue->u16BuffSize;
+    psQue->u16DataSize--;
+    return (int16_t)byte;
+}
+#endif //USE_SERIAL && SERIAL_HW_FLOW_CONTROL
+
+
+#ifdef USE_SERIAL
+//ここからシリアル0関数
+
+
+// 送信FIFOバッファ(16～2047)
+static uint8_t au8SerialTxBuffer0[SERIAL_TX_BUFFER_SIZE]; 
+
+// 受信FIFOバッファ(16～2047)
+static uint8_t au8SerialRxBuffer0[SERIAL_RX_BUFFER_SIZE];   //ハードウェアフロー制御のときは二次バッファとなる  
+
+//u8AHI_UartReadLineStatus()の値を保持
+uint8_t serial0StatusBit;
+
+#ifdef SERIAL_HW_FLOW_CONTROL
+static uint8_t au8SerialRxBuffer0_internal[20]; //一次バッファ
+static BYTEQUE sSerialRxQue0;                   //二次バッファ管理用キュー
+
+void serial0UpdateRxBuffer();
+#endif
+
+//シリアル0を初期化する
+//bUseSecondPin RXD   TXD   RTS   CTS
+//  FALSE       DIO7  DIO6  DIO5  DIO4
+//  TRUE        DIO15 DIO14 DIO13 DIO12
+//SERIAL_HW_FLOW_CONTROL未宣言時はRTS,CTSピンは使用しないため、DIOとして利用できます。
+bool_t serial_initEx(SERIALBAUD baudRate, SERIALPARITY parity, SERIALBITLENGTH bitLength, SERIALSTOPBIT stopBit, bool_t bUseSecondPin) {
+
+    vAHI_UartSetLocation(E_AHI_UART_0, bUseSecondPin);
+
+#ifdef SERIAL_HW_FLOW_CONTROL
+    vAHI_UartSetRTSCTS(E_AHI_UART_0, TRUE); //RTS,CTSピンを使う
+#else
+    vAHI_UartSetRTSCTS(E_AHI_UART_0, FALSE);
+#endif
+
+    if (!bAHI_UartEnable(E_AHI_UART_0,
+        au8SerialTxBuffer0,     //uint8 *pu8TxBufAd,
+        SERIAL_TX_BUFFER_SIZE,  //uint16 u16TxBufLen,
+#ifdef SERIAL_HW_FLOW_CONTROL
+        au8SerialRxBuffer0_internal, //uint8 *pu8RxBufAd,
+        (uint16_t)20)                   //uint16 u16RxBufLen);
+#else
+        au8SerialRxBuffer0,             //uint8 *pu8RxBufAd,
+        SERIAL_RX_BUFFER_SIZE)          //uint16 u16RxBufLen);
+#endif
+    ) return FALSE;
+
+    u8AHI_UartReadLineStatus(E_AHI_UART_0); //clear
+    serial0StatusBit = 0;
+
+    vAHI_UartSetBaudRate(E_AHI_UART_0, baudRate);
+
+    vAHI_UartSetControl(E_AHI_UART_0,
+        (parity == SERIAL_PARITY_EVEN), //bool_t bEvenParity,
+        (parity != SERIAL_PARITY_NONE), //bool_t bEnableParity,
+        bitLength,                      //uint8 u8WordLength,
+        (stopBit == SERIAL_STOP_1BIT),  //bool_t bOneStopBit,
+        FALSE);                         //bool_t bRtsValue); FALSE:"RequestToSend"
+
+    vAHI_UartSetAutoFlowCtrl(E_AHI_UART_0,
+        E_AHI_UART_FIFO_ARTS_LEVEL_15,  //uint8 u8RxFifoLevel, 一次バッファが15バイトでRTSがHになる
+        FALSE,                  //bool_t bFlowCtrlPolarity,
+#ifdef SERIAL_HW_FLOW_CONTROL
+        TRUE,                   //bool_t bAutoRts,  受信制御自動
+        TRUE);                  //bool_t bAutoCts); 送信制御自動
+#else
+        FALSE,
+        FALSE);
+#endif
+
+#ifdef SERIAL_HW_FLOW_CONTROL
+    //二次バッファ用キューを初期化
+    que_init(&sSerialRxQue0, au8SerialRxBuffer0, SERIAL_RX_BUFFER_SIZE);
+
+    //一次バッファ監視用にタイマー起動
+    timer_attachCallback(4, 4, 1000, serial0UpdateRxBuffer);  //1ms
+    timer_start(4);
+#endif
+
+    return TRUE;
+}
+
+void serial_disable() {
+    vAHI_UartDisable(E_AHI_UART_0);
+#ifdef SERIAL_HW_FLOW_CONTROL
+    timer_detach(4);
+#endif
+}
+
+#ifdef SERIAL_HW_FLOW_CONTROL
+//フロー制御時に一次バッファから二次バッファにデータを移送
+//タイマーコールバック関数(遅延割り込み)も兼ねる
+void serial0UpdateRxBuffer() {
+    while (u16AHI_UartReadRxFifoLevel(E_AHI_UART_0) > 0 && !que_bufferFull(&sSerialRxQue0)) {
+        que_append(&sSerialRxQue0, u8AHI_UartReadData(E_AHI_UART_0));
+    }
+}
+#endif
+
+//シリアル0でバッファフルなどによる欠落が発生したか
+bool_t serial_dataLost() {
+    serial0StatusBit |= u8AHI_UartReadLineStatus(E_AHI_UART_0); //フラグ合成
+    bool_t b;
+#ifdef SERIAL_HW_FLOW_CONTROL
+    b = ((serial0StatusBit & E_AHI_UART_LS_OE) || que_dataLost(&sSerialRxQue0));
+#else
+    b = (serial0StatusBit & E_AHI_UART_LS_OE);
+#endif
+    serial0StatusBit &= (E_AHI_UART_LS_OE ^ 0xff);  //フラグクリア
+    return b;
+}
+
+//シリアル0の受信バッファのデータ数を返す
+uint16_t serial_getRxCount() {
+#ifdef SERIAL_HW_FLOW_CONTROL
+    serial0UpdateRxBuffer(); //データがあれば読み込む
+    return que_getCount(&sSerialRxQue0);
+#else
+    return u16AHI_UartReadRxFifoLevel(E_AHI_UART_0);
+#endif
+}
+
+//シリアル0から1バイト読み出す。データが無い場合は-1を返す
+uint16_t serial_getc() {
+#ifdef SERIAL_HW_FLOW_CONTROL
+    serial0UpdateRxBuffer();         //データがあれば読み込む
+    return que_get(&sSerialRxQue0); //無いときは-1を返す
+#else
+    if (u16AHI_UartReadRxFifoLevel(E_AHI_UART_0) == 0) return -1;
+    return (int16_t)u8AHI_UartReadData(E_AHI_UART_0);
+#endif
+}
+
+//シリアル0からバッファに読み込む。読み込み終了条件は以下の通り
+//・u8Terminateが見つかった場合。u8Terminateを含む。
+//・バッファいっぱい、(u16Length-1)文字読み込むまで。
+//・読み込むデータがなくなった場合。
+//バッファにnull終端'\0'が付加されるため、最大読み取りバイト数は(u16Length-1)となる。
+//関数はnull終端を含めない、読み込んだバイト数を返す。エラーの場合-1。
+int16_t serial_readUntil(uint8_t u8Terminate, uint8_t *pu8Buffer, uint16_t u16Length) {
+    if (u16Length <= 1) return -1;
+#ifdef SERIAL_HW_FLOW_CONTROL
+    serial0UpdateRxBuffer(); //データがあれば読み込む
+#endif
+    int16_t len = 0;
+    while (u16Length-- > 1) {
+#ifdef SERIAL_HW_FLOW_CONTROL
+        if (que_getCount(&sSerialRxQue0) == 0) break;
+        uint8_t c= que_get(&sSerialRxQue0);
+#else
+        if (u16AHI_UartReadRxFifoLevel(E_AHI_UART_0) == 0) break;
+        uint8_t c = u8AHI_UartReadData(E_AHI_UART_0);
+#endif
+        *pu8Buffer++ = c;
+        len++;
+        if (c == u8Terminate) break;
+    }
+    *pu8Buffer = '\0';
+    return len;
+}
+
+//シリアル0に書式文字列を書き出す。バッファがいっぱいの場合は書き出さずにFALSEを返す
+/*bool_t serial_printf(const char* format, va_list args) {
     SPRINTF_vRewind();
     vfPrintf(SPRINTF_Stream, format, args);
     va_end(args);
-    return SERIAL_bTxString(E_AHI_UART_0, SPRINTF_pu8GetBuff());
-}
-*/
+    return serialx_puts(E_AHI_UART_0, SPRINTF_pu8GetBuff());
+}*/
+
 #endif //USE_SERIAL
 
 
 #ifdef USE_SERIAL1
+//ここからシリアル1関数
 
-tsFILE sUartStream1;
-tsSerialPortSetup sUartPort1;
-tsUartOpt sUartOpt1;
 
-// 送信FIFOバッファ
-#ifndef SERIAL1_TX_BUFFER_SIZE
-#define SERIAL1_TX_BUFFER_SIZE 96
-#endif
-uint8_t au8SerialTxBuffer1[SERIAL1_TX_BUFFER_SIZE]; 
+// 送信FIFOバッファ(16～2047)
+static uint8_t au8SerialTxBuffer1[SERIAL1_TX_BUFFER_SIZE]; 
 
-// 受信FIFOバッファ
-#ifndef SERIAL1_RX_BUFFER_SIZE
-#define SERIAL1_RX_BUFFER_SIZE 32
-#endif
-uint8_t au8SerialRxBuffer1[SERIAL1_RX_BUFFER_SIZE]; 
-#endif //USE_SERAIL1
+// 受信FIFOバッファ(16～2047)
+static uint8_t au8SerialRxBuffer1[SERIAL1_RX_BUFFER_SIZE];
+
+//u8AHI_UartReadLineStatus()の値を保持
+uint8_t serial1StatusBit;
+
+//シリアル1を初期化する
+//bUseSecondPin RXD   TXD
+//  FALSE       DIO15 DIO14
+//  TRUE        DIO9  DIO11
+//bUseTxOnly=TRUEの場合、RXDピンは使用しないのでDIOとして使用できます。
+bool_t serial1_initEx(SERIALBAUD baudRate, SERIALPARITY parity, SERIALBITLENGTH bitLength, SERIALSTOPBIT stopBit, bool_t bUseTxOnly, bool_t bUseSecondPin) {
+
+    vAHI_UartSetLocation(E_AHI_UART_1, bUseSecondPin);
+
+    vAHI_UartTxOnly(E_AHI_UART_1, bUseTxOnly);
+
+    if (!bAHI_UartEnable(E_AHI_UART_1,
+        au8SerialTxBuffer1,     //uint8 *pu8TxBufAd,
+        SERIAL1_TX_BUFFER_SIZE, //uint16 u16TxBufLen,
+        au8SerialRxBuffer1,             //uint8 *pu8RxBufAd,
+        SERIAL1_RX_BUFFER_SIZE)         //uint16 u16RxBufLen);
+    ) return FALSE;
+
+    u8AHI_UartReadLineStatus(E_AHI_UART_1); //clear
+    serial1StatusBit = 0;
+
+    vAHI_UartSetBaudRate(E_AHI_UART_1, baudRate);
+
+    vAHI_UartSetControl(E_AHI_UART_1,
+        (parity == SERIAL_PARITY_EVEN), //bool_t bEvenParity,
+        (parity != SERIAL_PARITY_NONE), //bool_t bEnableParity,
+        bitLength,                      //uint8 u8WordLength,
+        (stopBit == SERIAL_STOP_1BIT),  //bool_t bOneStopBit,
+        FALSE);                         //bool_t bRtsValue); FALSE:"RequestToSend"
+
+    return TRUE;
+}
+
+//シリアル1でバッファフルなどによる欠落が発生したか
+bool_t serial1_dataLost() {
+    serial1StatusBit |= u8AHI_UartReadLineStatus(E_AHI_UART_1); //フラグ合成
+    bool_t b = (serial1StatusBit & E_AHI_UART_LS_OE);
+    serial1StatusBit &= (E_AHI_UART_LS_OE ^ 0xff);  //フラグクリア
+    return b;
+}
+
+//シリアル1から1バイト読み出す。データが無い場合は-1を返す
+uint16_t serial1_getc() {
+    if (u16AHI_UartReadRxFifoLevel(E_AHI_UART_1) == 0) return -1;
+    return (int16_t)u8AHI_UartReadData(E_AHI_UART_1);
+}
+
+//シリアル1からバッファに読み込む。読み込み終了条件は以下の通り
+//・u8Terminateが見つかった場合。u8Terminateを含む。
+//・バッファいっぱい、(u16Length-1)文字読み込むまで。
+//・読み込むデータがなくなった場合。
+//バッファにnull終端'\0'が付加されるため、最大読み取りバイト数は(u16Length-1)となる。
+//関数はnull終端を含めない、読み込んだバイト数を返す。エラーの場合-1。
+int16_t serial_readUntil(uint8_t u8Terminate, uint8_t *pu8Buffer, uint16_t u16Length) {
+    if (u16Length <= 1) return -1;
+    int16_t len = 0;
+    while (u16Length-- > 1) {
+        if (u16AHI_UartReadRxFifoLevel(E_AHI_UART_1) == 0) break;
+        uint8_t c = u8AHI_UartReadData(E_AHI_UART_1);
+        *pu8Buffer++ = c;
+        len++;
+        if (c == u8Terminate) break;
+    }
+    *pu8Buffer = '\0';
+    return len;
+}
+
+//シリアル1に書式文字列を書き出す。バッファがいっぱいの場合は書き出さずにFALSEを返す
+/*bool_t serial1_printf(const char* format, va_list args) {
+    SPRINTF_vRewind();
+    vfPrintf(SPRINTF_Stream, format, args);
+    va_end(args);
+    return serialx_puts(E_AHI_UART_1, SPRINTF_pu8GetBuff());
+}*/
+#endif //USE_SERIAL1
 
 
 #if defined(USE_SERIAL) || defined(USE_SERIAL1)
-//Serial0,1共通関数を定義
+//ここからシリアル共通関数
 
-//定数 SERIAL_BAUD_115200 などを渡すこと
-bool_t serialx_init(uint8_t u8SerialPort, BAUDRATES baudRate, tsFILE *psUartStream, tsSerialPortSetup *psUartPort, tsUartOpt *psUartOpt) {
-    if (u8SerialPort != E_AHI_UART_0 && u8SerialPort != E_AHI_UART_1) return FALSE;
-    if ((baudRate & 0x80000000) == 0) return FALSE;
 
-    psUartPort->pu8SerialRxQueueBuffer = au8SerialRxBuffer0;
-    psUartPort->pu8SerialTxQueueBuffer = au8SerialTxBuffer0;
-    psUartPort->u32BaudRate = baudRate;
-    psUartPort->u16AHI_UART_RTS_LOW = 0xffff;
-    psUartPort->u16AHI_UART_RTS_HIGH = 0xffff;
-    psUartPort->u16SerialRxQueueSize = sizeof(au8SerialRxBuffer0);
-    psUartPort->u16SerialTxQueueSize = sizeof(au8SerialTxBuffer0);
-    psUartPort->u8SerialPort = u8SerialPort; //E_AHI_UART_0;
-    psUartPort->u8RX_FIFO_LEVEL = E_AHI_UART_FIFO_LEVEL_1;
-
-    psUartOpt->bHwFlowEnabled = FALSE; // TRUE, FALSE
-	psUartOpt->bParityEnabled = FALSE; // TRUE, FALSE
-	//psUartOpt->u8ParityType; // E_AHI_UART_EVEN_PARITY, E_AHI_UART_ODD_PARITY
-	psUartOpt->u8StopBit = E_AHI_UART_1_STOP_BIT; // E_AHI_UART_1_STOP_BIT, E_AHI_UART_2_STOP_BIT
-	psUartOpt->u8WordLen = 8; // 5-8 を指定 (E_AHI_UART_WORD_LEN_? は指定しない)
-
-    vAHI_UartSetRTSCTS(u8SerialPort, FALSE);
-    SERIAL_vInitEx(psUartPort, psUartOpt);
-
-    psUartStream->bPutChar = SERIAL_bTxChar;
-    psUartStream->u8Device = u8SerialPort; //E_AHI_UART_0;
+//シリアルに1バイト書き出す。バッファがいっぱいの場合は書き出さずにFALSEを返す
+bool_t serialx_putc(uint8_t serialNo, uint8_t u8Data) {
+    if (u16AHI_UartReadTxFifoLevel(serialNo) == SERIAL_TX_BUFFER_SIZE) return FALSE;
+    vAHI_UartWriteData(serialNo, u8Data);
     return TRUE;
 }
 
-//debugLevel=0..5 (0:デバッグ出力無し)
-bool_t serialx_forDebug(tsFILE *psUartStream, uint8_t debugLevel) {
-    if (debugLevel > 5) return FALSE;
-
-    ToCoNet_vDebugInit(psUartStream);
-	ToCoNet_vDebugLevel(debugLevel);
-    return TRUE;
-}
-
-bool_t serialx_write(uint8_t u8SerialPort, uint8_t *pu8Data, uint8_t length)
-{
-    if (u8SerialPort != E_AHI_UART_0 && u8SerialPort != E_AHI_UART_1) return FALSE;
-
-    while(length-- > 0)
-    {
-        if (!SERIAL_bTxChar(u8SerialPort, *pu8Data)) return FALSE;
-        pu8Data++;
+//シリアルにバイト配列を書き出す。バッファがいっぱいの場合は書き出さずにFALSEを返す
+bool_t serialx_write(uint8_t serialNo, uint8_t *pau8Data, uint16_t u16Length) {
+    if (((serialNo == E_AHI_UART_0 ? SERIAL_TX_BUFFER_SIZE : SERIAL1_TX_BUFFER_SIZE) - u16AHI_UartReadTxFifoLevel(serialNo)) < u16Length) return FALSE;
+    while (u16Length-- > 0) {
+        vAHI_UartWriteData(serialNo, *pau8Data++);
     }
     return TRUE;
 }
 
-int16_t serialx_readUntil(uint8_t u8SerialPort, uint8_t u8Terminate, uint8_t *pu8Buffer, uint16_t u16BufferLength) {
-    int16_t len = 0;
-    while (u16BufferLength > 0) {
-        if (*pu8Buffer == '\0') break;
-        pu8Buffer++;
-        u16BufferLength--;
-        len++;
-    }
-    if (u16BufferLength == 0) return -1; //Buffer not initialized. (Not found null terminate)
-
-    while (u16BufferLength > 1 && !SERIAL_bRxQueueEmpty(u8SerialPort)) {
-        int16_t c = SERIAL_i16RxChar(u8SerialPort);
-        if (c < 0) return -1; //Error
-
-        *pu8Buffer++ = c;
-        u16BufferLength--;
-        len++;
-
-        if (c == u8Terminate) {
-            *pu8Buffer = '\0';
-            return len;
-        }
-    }
-    *pu8Buffer = '\0';
-    return (u16BufferLength == 1) ? len : 0;
+//シリアルに文字列を書き出す。バッファがいっぱいの場合は書き出さずにFALSEを返す
+bool_t serialx_puts(uint8_t serialNo, uint8_t *pau8String) {
+    return serialx_write(serialNo, pau8String, (uint16_t)strlen((const char *)pau8String));
 }
 
 #endif //USE_SERIAL || USE_SERIAL1
@@ -1414,6 +1620,8 @@ static bool_t setAddress(bool_t bRead, uint16_t u16Address) {
 //事前にi2c_setAddressingMode()でアドレスサイズを設定しておくこと。デフォルトは７ビット
 bool_t i2c_write(uint16_t u16Address, uint8_t u8Command, const uint8* pu8Data, uint8_t u8Length)
 {
+    if (pu8Data == NULL) u8Length = 0;
+
     //アドレス設定
     if (!setAddress(FALSE, u16Address)) return FALSE;
 
@@ -1521,7 +1729,9 @@ bool_t i2c_readOnly(uint16_t u16Address, uint8* pu8Data, uint8_t u8Length)
 //I2Cで指定アドレスのコマンドからデータを読み出します
 bool_t i2c_read(uint16_t u16Address, uint8_t u8Command, uint8* pu8Data, uint8_t u8Length) {
     if (!i2c_write(u16Address, u8Command, NULL, 0)) return FALSE;
-    if (!i2c_readOnly(u16Address, pu8Data, u8Length)) return FALSE;
+    if (pu8Data != NULL && u8Length > 0) {
+        if (!i2c_readOnly(u16Address, pu8Data, u8Length)) return FALSE;
+    }
     return TRUE;
 }
 
@@ -1533,9 +1743,14 @@ int16_t i2c_readByte(uint16_t u16Address, uint8_t u8Command) {
     return (int16_t)data;
 }
 
-//I2Cで指定アドレスにコマンドと1バイトのデータを書き込む
+//I2Cで指定アドレスにコマンドと1バイトのデータを書き込みます。
 bool_t i2c_writeByte(uint16_t u16Address, uint8_t u8Command, uint8_t u8Data) {
     return i2c_write(u16Address, u8Command, &u8Data, 1);
+}
+
+//I2Cで指定アドレスに1バイトのデータを書き込みます。
+bool_t i2c_writeByteOnly(uint16_t u16Address, uint8_t u8Data) {
+    return i2c_writeOnly(u16Address, &u8Data, 1);
 }
 
 //I2Cで指定アドレスからデータを1バイト読み出します。失敗で-1
@@ -1595,13 +1810,13 @@ bool_t spi_selectSlavePin(uint8_t slaveNo, bool_t bSecondPin) {
 
 //SPIスレーブ 0..2を選択。その他の値で無選択となる
 //具体的には0..2で次のDIO(SSピン)がLになる DIO19,DIO0*,DIO1*  *spi_selectPin()で変更可能
-void spi_selectSlave(int8_t slaveNo) {
+/*void spi_begin(int8_t slaveNo) {
     if (slaveNo >= 0 && slaveNo <= 2) {
         vAHI_SpiSelect(1 << slaveNo);
     } else {
         vAHI_SpiSelect(0);
     }
-}
+}*/
 
 //1バイトのコマンドを送信し、1バイトのデータを読み取る
 //slaveNo=0..2
@@ -1618,7 +1833,7 @@ uint8_t spi_readByte(int8_t slaveNo, uint8_t u8Command) {
 //1バイトのコマンドを送信し、複数バイトのデータを読み取る
 //slaveNo=0..2
 void spi_read(int8_t slaveNo, uint8_t u8Command, uint8* pu8Data, uint8_t u8Length) {
-    if (u8Length == 0) return;
+    if (pu8Data == NULL || u8Length == 0) return;
 
     vAHI_SpiSelect(1 << slaveNo);
 
@@ -1673,10 +1888,12 @@ void radio_attachTxCallback(void (*func)(uint8_t u8CbId, bool_t bSuccess)) {
     radioTxCallbackFunction = func;
 }
 
+#ifdef RX_ON_IDLE
 //無線受信割り込みルーチンを設定する
 void radio_attachRxCallback(void (*func)(uint32_t u32SrcAddr, uint8_t u8CbId, uint8_t u8DataType, uint8_t *pu8Data, uint8_t u8Length, uint8_t u8Lqi)) {
     radioRxCallbackFunction = func;
 }
+#endif
 
 //無線で特定の相手に送信する
 //basicio_module.hで送信モジュールと同じAPP_ID,CHANNELに設定し、RX_ON_IDLE=TRUEとしたモジュールかつ、関数の引数でu32DistAddrに指定したモジュールが受信できる
@@ -1703,10 +1920,7 @@ int16_t radio_write(uint32_t u32DestAddr, uint8_t *pu8Data, uint8_t u8Length, ui
     memcpy(tsTx.auData, pu8Data, u8Length);
 
 	tsTx.bAckReq = (u32DestAddr != TOCONET_MAC_ADDR_BROADCAST); //TRUE Ack付き送信を行う
-#ifndef TX_RETRY
-#define TX_RETRY 2
-#endif
-	tsTx.u8Retry = TX_RETRY;    		            //MACによるAck付き送信失敗時に、さらに再送する場合(ToCoNet再送)の再送回数
+	tsTx.u8Retry = TX_RETRY | 0x80;  		        //MACによるAck付き送信失敗時に、さらに再送する場合(ToCoNet再送)の再送回数
 
 	//tsTx.u16ExtPan = 0;                           //0:外部PANへの送信ではない 1..0x0FFF: 外部PANへの送信 (上位4bitはリザーブ)
 
@@ -1732,52 +1946,18 @@ int16_t radio_write(uint32_t u32DestAddr, uint8_t *pu8Data, uint8_t u8Length, ui
 //関数はエラーで-1、送信開始で8bitの送信Id(u8CbId)を返す。これは送信完了コールバックで送信データの識別に使用される
 int16_t radio_puts(uint32_t u32DestAddr, uint8_t *pu8String)
 {
-    uint16_t len = (uint16_t)strlen(pu8String);
+    uint32_t len = (uint32_t)strlen((const char *)pu8String);
     if (len > 108) return -1;
-
-    u8RadioSeqNo++;
-
-    tsTxDataApp tsTx;
-    memset(&tsTx, 0, sizeof(tsTxDataApp));
-
-    tsTx.u32SrcAddr = moduleAddress();              //送信元アドレス
-    tsTx.u32DstAddr = u32DestAddr;                  //送信先アドレス
-
-	tsTx.u8Cmd = 0;                                 //データ種別 (0..7)。データの簡易識別子。
-	tsTx.u8Seq = u8RadioSeqNo; 		                //シーケンス番号(複数回送信時に、この番号を調べて重複受信を避ける)
-	tsTx.u8Len = len; 		                        //データ長
-	tsTx.u8CbId = u8RadioSeqNo;	                    //送信識別ID。送信完了イベントの引数として渡され、送信イベントとの整合を取るために使用する
-    memcpy(tsTx.auData, pu8String, len);
-
-	tsTx.bAckReq = (u32DestAddr != TOCONET_MAC_ADDR_BROADCAST); //TRUE Ack付き送信を行う
-	tsTx.u8Retry = 2; 		                        //最大送信回数は3回になる
-
-	//tsTx.u16ExtPan = 0;                           //0:外部PANへの送信ではない 1..0x0FFF: 外部PANへの送信 (上位4bitはリザーブ)
-
-	//tsTx.u16DelayMax = 0;       //送信開始までのディレー(最大)[ms]。指定しない場合は 0 にし、指定する場合は Min 以上にすること。
-	//tsTx.u16DelayMin = 0;       //送信開始までのディレー(最小)[ms]
-	tsTx.u16RetryDur = 10;      //再送間隔[ms]。
-
-    //送信
-    if (ToCoNet_bMacTxReq(&tsTx)) {
-         
-        //送信中データカウント
-        u8NumRadioTx++;
-
-        //送信データIdを返す
-        return tsTx.u8CbId;
-    } else {
-        return -1;
-    }
+    return radio_write(u32DestAddr, pu8String, (uint8_t)len, 0);
 }
 
 //radio_write()のprintf版
-bool_t radio_printf(uint32_t u32DestAddr, const char* format, va_list args) {
+/*bool_t radio_printf(uint32_t u32DestAddr, const char* format, va_list args) {
     SPRINTF_vRewind();
     vfPrintf(SPRINTF_Stream, format, args);
     va_end(args);
     return radio_puts(u32DestAddr, SPRINTF_pu8GetBuff());
-}
+}*/
 
 #endif //USE_RADIO
 
@@ -1788,53 +1968,33 @@ bool_t radio_printf(uint32_t u32DestAddr, const char* format, va_list args) {
 
 
 /*
- * FRASHメモリ
+ * FLASHメモリ
  */
 
 #ifdef USE_FLASH
-#define FLASH_TYPE E_FL_CHIP_INTERNAL
-#define FLASH_SECTOR_SIZE (32L* 1024L) // 32KB
-
-#ifdef TWELITE_BLUE
-#define FLASH_LAST_SECTOR   4   //BLUE
-#else
-#define FLASH_LAST_SECTOR   15  //RED
-#endif
-
 
 //sector=0..4(BLUE)/0..15(RED)。プログラムはセクタ0から書き込まれるので、使用していないセクタに書き込むこと
 //flash_write()はビットを1から0にしか書き換えられないので、この関数により消去(ビットを1にする)した部分にしか書き込めない
 bool_t flash_erase(uint8_t sector)
 {
-#ifdef FLASH_LAST_SECTOR
     if (sector > FLASH_LAST_SECTOR) return FALSE;
-#endif
-
-    if (!bAHI_FlashInit(FLASH_TYPE, NULL)) return FALSE;
-    return bAHI_FlashEraseSector(sector);
+    if (!bAHI_FlashInit(E_FL_CHIP_INTERNAL, NULL)) return FALSE;
+    if (!bAHI_FlashEraseSector(sector)) return FALSE;
+    return TRUE;
 }
 
 //sector=0..4(BLUE)/0..15(RED)。プログラムはセクタ0から書き込まれるので、使用していないセクタに書き込むこと
 //offsetはセクタ内オフセット値で、16の倍数とする
-//pu8Dataの先頭に２バイトのリザーブ領域を設けておくこと。構造体の場合は uint8_t reserve[2]; とする。
 //データ長を示すu16DataLengthにはリザーブ領域の2バイトを含む。1セクタは32KBであるが、このデータ領域がセクタ境界を越えてはならない
 //事前にflash_erase()で領域をフォーマットしておくこと
-bool_t flash_write(uint8_t sector, uint32_t offset, uint8_t *pu8Data, uint16_t u16DataLength)
+bool_t flash_write(uint8_t sector, uint32_t offset, uint8_t *pu8Data, uint16_t u16Length)
 {
-    if ((offset & 15) != 0) return FALSE;
+    if ((offset & 15) != 0 || (u16Length & 15) != 0) return FALSE;
     if (offset + u16DataLength > FLASH_SECTOR_SIZE) return FALSE;
-#ifdef FLASH_LAST_SECTOR
     if (sector > FLASH_LAST_SECTOR) return FALSE;
-#endif
 
-    offset += (uint32)sector * FLASH_SECTOR_SIZE;
-
-    if (!bAHI_FlashInit(FLASH_TYPE, NULL)) return FALSE;
-
-    *pu8Data = 0xE7;                                            //MAGIC_NUMBER
-    *(pu8Data + 1) = u8CCITT8(pu8Data + 2, u16DataLength - 2);  //CRC8
-
-    return bAHI_FullFlashProgram(offset, u16DataLength, pu8Data);
+    uint32_t addr = offset + (uint32)sector * FLASH_SECTOR_SIZE;
+    return bAHI_FullFlashProgram(addr, u16Length, pu8Data);
 }
 
 //MAGIC_NUMBERとCRC8の２つの方法でデータが書き込んだものと同じであることを確認している  
@@ -1844,7 +2004,7 @@ bool_t flash_read(uint8 sector, uint32 offset, uint8_t *pu8Data, uint16_t u16Dat
 
     offset += (uint32)sector * FLASH_SECTOR_SIZE;
 
-    if (!bAHI_FlashInit(FLASH_TYPE, NULL)) return FALSE;
+    if (!bAHI_FlashInit(E_FL_CHIP_INTERNAL, NULL)) return FALSE;
     if (!bAHI_FullFlashRead(offset, u16DataLength, pu8Data)) return FALSE;
 
     if (*pu8Data != 0xE7) return FALSE;                                             //MAGIC_NUMBER
@@ -1887,6 +2047,7 @@ static void vProcessEvCore(tsEvent *pEv, teEvent eEvent, uint32_t u32evarg)
 
 #ifdef USE_RADIO
 static uint32_t u32SrcAddrPrev;
+static uint32_t u32MillisPrev;
 static uint8_t u8seqPrev;
 #endif
 
@@ -1925,16 +2086,13 @@ void resetVars()
     u8NumRadioTx = 0;
 
     u32SrcAddrPrev = 0;
+    u32MillisPrev = 0;
     u8seqPrev = 255;
 #endif
 
     millisValue = 0;
 
 #ifdef SPRINTF_H_
-#ifndef SB_BUFFER_SIZE
-#define SB_BUFFER_SIZE 128
-#endif
-
 #if SB_BUFFER_SIZE == 32
         SPRINTF_vInit32();
 #elif SB_BUFFER_SIZE == 64
@@ -1985,9 +2143,6 @@ void initAppContext()
 
 	sToCoNet_AppContext.u8RandMode = 3; //!< 乱数生成方法の指定。0:ハード 1:システム経過時間を元に生成 2:MT法 3:XorShift法 (32kOscモードで外部水晶が利用されたときは 0 の場合 XorShift 方を採用する)
                                 //※ハードウェア乱数では同一ループ内では同じ値しか生成できない。MT法は高品質だがライセンス表記必要。    
-#ifndef TICK_COUNT
-#define TICK_COUNT  250
-#endif
 	sToCoNet_AppContext.u16TickHz = TICK_COUNT; //!< システムの Tick カウントの周期(規定値は250=4ms, 1000で割り切れる値にすること。事実上 1000, 500, 250, 200, 100 のみ)
     millisValueTick = 1000 / TICK_COUNT;
 }
@@ -2144,11 +2299,14 @@ void cbToCoNet_vNwkEvent(teEvent eEvent, uint32_t u32arg)
 void cbToCoNet_vRxEvent(tsRxDataApp *pRx)
 {
 #ifdef USE_RADIO
-    // 前回と同一の送信元＋シーケンス番号のパケットなら無視
+
+    // 前回と同一の送信元＋シーケンス番号かつ、100ms未満のパケットなら無視
+    // 時間を考慮したのは、送信側がRAM OFFでスリープから起きると、常にu8Seqが1になってしまうため、うまく受信できない
     if (pRx->u32SrcAddr == u32SrcAddrPrev && pRx->u8Seq == u8seqPrev) {
-        return;
+        if (u32MillisPrev != 0 && (millis() - u32MillisPrev) < 100) return;
     }
     u32SrcAddrPrev = pRx->u32SrcAddr;
+    u32MillisPrev = millis();
     u8seqPrev = pRx->u8Seq;
 
     if (radioRxCallbackFunction != NULL) {
@@ -2360,7 +2518,7 @@ uint8_t cbToCoNet_u8HwInt(uint32_t u32DeviceId, uint32_t u32ItemBitmap)
 #endif
 
     case E_AHI_DEVICE_TICK_TIMER:
-        //u32AHI_TickTimerRead()がうまく値を返してくれない(仕様?)のでここでカウント
+        //u32AHI_TickTimerRead()は1秒毎にリセットされてるみたいなので、ここで独自にカウント
         millisValue += millisValueTick;
 
         //E_AHI_DEVICE_TICK_TIMERは例外的にTRUEを返してはいけない (固まる)

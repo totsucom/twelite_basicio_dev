@@ -7,7 +7,7 @@
 
 
 /* 文字列バッファ補助関数 sb_XXX を使用する */
-//#define USE_SBUTIL                  //USE_RADIOの宣言でも有効になる(radio_printfで使用)
+//#define USE_SBUTIL                  //USE_RADIO,USE_SERIALの宣言でも有効になる(xxx_printfで使用)
 
 /* 文字列バッファ補助関数 オプション */
 //#define SB_BUFFER_SIZE  128       //sb_printf()等で使用するバッファサイズを指定します 32/64/128/256/512/1024のいずれかです。（規定値: 128）
@@ -24,9 +24,13 @@
 /* シリアル0 機能 */
 #define USE_SERIAL  //シリアル0を使用する
 
+/* シリアル0 フロー制御オプション */
+//#define SERIAL_HW_FLOW_CONTROL        //シリアル0にハードウェアフロー制御(CTS,RTS)を使用する(内部的にTimer4を使用)
+
 /* シリアル0 オプション */
 //#define SERIAL_TX_BUFFER_SIZE 96 //送信バッファの大きさ(規定値:96)
 //#define SERIAL_RX_BUFFER_SIZE 32 //受信バッファの大きさ(規定値:32)
+
 
 
 
@@ -40,7 +44,7 @@
 
 
 /* 無線通信 機能 */
-//#define USE_RADIO   //無線通信機能を使う
+#define USE_RADIO   //無線通信機能を使う
 
 /* 無線通信 設定（USE_RADIO宣言時は必須）*/
 #define APP_ID      0x67720103  //無線通信するうえで、そのグループは同じ値APP_IDを設定すること
