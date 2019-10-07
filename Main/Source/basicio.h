@@ -1,3 +1,9 @@
+/*
+ * basicio.h
+ * バージョン 1.00
+ * 2019/10/07 by T.Maeoka
+ */
+
 #ifndef __BASICIO_H
 #define __BASICIO_H
 
@@ -11,21 +17,42 @@
 #include "serial.h"
 #endif
 
-#ifdef USE_RADIO
+#if defined(USE_RADIO) || defined(USE_RADIO_TXONLY)
 #include "ToCoNet_mod_prototype.h"
 #endif
 
-#ifdef USE_EEPROM
-#include "eeprom_6x.h"
-#endif
+//#ifdef USE_EEPROM
+//#include "eeprom_6x.h"
+//#endif
 
 //#ifdef USE_FLASH
 //#include "ccitt8.h"
 //#endif
 
-#if defined(USE_RADIO) || defined(USE_SBUTIL) || defined(USE_SERIAL) || defined(USE_SERIAL1)
+
+/*
+ * 条件コンパイル
+ */
+
+//文字列バッファ
+#if (defined(USE_RADIO) || defined(USE_RADIO_TXONLY) || defined(USE_SERIAL) || defined(USE_SERIAL1)) && !defined(USE_SBUTIL)
+#define USE_SBUTIL
+#endif
+
+//シリアル0のフロー制御にTimerを用いる
+#if defined(USE_SERIAL) && defined(SERIAL_HW_FLOW_CONTROL) && !defined(USE_TIMER)
+#define USE_TIMER
+#endif
+
+//ＡＤＣ，コンパレータ，パルスカウンタでDIOを使用
+#if (defined(USE_ADC) || defined(USE_COMP) || defined(USE_PC)) && !defined(USE_DIO)
+#define USE_DIO
+#endif
+
+#ifdef USE_SBUTIL
 #include "sprintf.h"
 #endif
+
 
 //TWELITE種類の判別
 #if JN5164 == 5164      //TWELITE BLUE
@@ -35,6 +62,26 @@
 #else
 #error Unknown TWELITE model
 #endif
+
+
+/*
+ * 定数
+ */
+
+#define DIO_MONOSTICK_LED   16
+
+#define LOW                 0
+#define HIGH                1
+
+//フラッシュメモリ定数
+#define FLASH_SECTOR_SIZE (32L* 1024L) // 32KB
+#ifdef TWELITE_RED
+#define FLASH_LAST_SECTOR   15  //RED
+#else
+#define FLASH_LAST_SECTOR   4   //BLUE
+#endif
+
+
 
 
 /*
@@ -77,11 +124,6 @@
 #define SERIAL_RX_BUFFER_SIZE 32
 #endif
 
-//シリアル0のフロー制御にTimer4を用いる
-#if defined(USE_SERIAL) && defined(SERIAL_HW_FLOW_CONTROL) && !defined(USE_TIMER)
-#define USE_TIMER
-#endif
-
 //シリアル1送信FIFOバッファ(16～2047)
 #ifndef SERIAL1_TX_BUFFER_SIZE
 #define SERIAL1_TX_BUFFER_SIZE 96
@@ -107,13 +149,6 @@
 #define TICK_COUNT  250
 #endif
 
-//フラッシュメモリ定数
-#define FLASH_SECTOR_SIZE (32L* 1024L) // 32KB
-#ifdef TWELITE_RED
-#define FLASH_LAST_SECTOR   15  //RED
-#else
-#define FLASH_LAST_SECTOR   4   //BLUE
-#endif
 
 
 /*
@@ -132,21 +167,18 @@ typedef enum {
  * いろいろ
  */
 
-//vWait()の機能を調べること。
-
-
-extern volatile uint32_t millisValue;
 
 //ミリ秒を計測するカウントアップタイマー。デフォルト精度は4ms。ユーザーが書き込んでもOK
 //割り込みでなくコールバックでカウントしてるので、loop()を一旦抜けないとカウントアップしない
-#define millis()            millisValue
+extern uint32_t millis();
+
 
 //32bit乱数を生成
-#define rand()              ToCoNet_u32GetRand()
+#define rand()                      ToCoNet_u32GetRand()
 
 //モジュールの32bitアドレス。モジュールのシリアル番号を元にシステムにより自動生成される
 //モジュールを識別する番号として用いる
-#define moduleAddress()     ToCoNet_u32GetSerial()
+#define getModuleAddress()          ToCoNet_u32GetSerial()
 
 extern bool_t sleepTimer(uint64_t milliSeconds, bool_t bRAMPower);
 
@@ -166,9 +198,12 @@ extern bool_t sleepTimer(uint64_t milliSeconds, bool_t bRAMPower);
 
 
 
-#ifdef SPRINTF_H_
+#ifdef USE_SBUTIL
 #define sb_clear()              SPRINTF_vRewind()
+#define sb_putc(c)              (SPRINTF_Stream->bPutChar(SPRINTF_Stream->u8Device, c))
+extern void sb_puts(const char *str);
 #define sb_printf(...)          vfPrintf(SPRINTF_Stream, LB __VA_ARGS__)
+extern void sb_removeCrLf();
 #define sb_getBuffer()          SPRINTF_pu8GetBuff()
 #endif
 
@@ -176,6 +211,7 @@ extern bool_t sleepTimer(uint64_t milliSeconds, bool_t bRAMPower);
 extern void pb_define(uint8_t pinNo, bool_t bPressToHi);
 extern bool_t pb_pressed(uint8_t pinNo);
 extern bool_t pb_released(uint8_t pinNo);
+extern bool_t pb_currentState(uint8_t pinNo);
 extern void pb_reset();
 #endif
 
@@ -185,16 +221,13 @@ extern void pb_reset();
  * デジタルIO
  */
 
-#define DIO_MONOSTICK_LED   16
+#ifdef USE_DIO
 
 typedef enum {
     INPUT,
     INPUT_PULLUP,
     OUTPUT
 } PINMODES;
-
-#define LOW                 0
-#define HIGH                1
 
 extern bool_t dio_pinMode(uint8_t pinNo, PINMODES mode);
 extern bool_t dio_write(uint8_t pinNo, uint8_t value);
@@ -212,10 +245,6 @@ extern bool_t dio_write(uint8_t pinNo, uint8_t value);
 #define dio_readAll()           u32AHI_DioReadInput()
 
 
-/*
- * デジタルIO(割り込み)
- */
-
 typedef enum {
     DISABLE,        //dio_attachCallback,dio_setWake,timer0_attachCounter
     RISING,         //dio_attachCallback,dio_setWake,timer0_attachCounter
@@ -226,6 +255,8 @@ typedef enum {
 extern bool_t dio_attachCallback(uint8_t pinNo, INTERRUPTIONEDGES mode, void (*func)(uint32_t u32DioBitmap));
 extern bool_t dio_detach(uint8_t pinNo);
 extern bool_t dio_setWake(uint8_t pinNo, INTERRUPTIONEDGES mode);
+
+#endif //USE_DIO
 
 
 
@@ -245,13 +276,14 @@ typedef struct {
 
 extern tsTimerContext2 sTimerApp[5];
 
-extern bool_t timer_attachCallback(uint8_t timerNo, uint8_t prescale, uint16_t cycleCount, void (*func)());
-extern bool_t timer_attachCallbackByHz(uint8_t timerNo, uint16_t hz, void (*func)());
+extern bool_t timer_attachCallback(uint8_t timerNo, uint8_t prescale, uint16_t cycleCount, bool_t bStartNow, void (*func)());
+extern bool_t timer_attachCallbackByHz(uint8_t timerNo, uint16_t hz, bool_t bStartNow, void (*func)());
 
-extern bool_t timer_attachPWM(uint8_t timerNo, uint8_t prescale, uint16_t cycleCount, uint16_t pulseCount, bool_t bStartFromLo, bool_t bUseSecondPin);
-extern bool_t timer_attachPWMByHzDuty(uint8_t timerNo, uint16_t hz, uint16_t duty, bool_t bStartFromHi, bool_t bUseSecondPin);
+extern bool_t timer_attachPWM(uint8_t timerNo, uint8_t prescale, uint16_t cycleCount, uint16_t pulseCount, bool_t bStartFromLo, bool_t bUseSecondPin, bool_t bStartNow);
+extern bool_t timer_attachPWMByHzDuty(uint8_t timerNo, uint16_t hz, uint16_t duty, bool_t bStartFromHi, bool_t bUseSecondPin, bool_t bStartNow);
 
-extern bool_t timer_updatePWMPulseCount(uint8_t timerNo, uint16_t pulseCount);
+extern int32_t timer_getPWMPulseCountULimit(uint8_t timerNo);
+extern bool_t timer_updatePWM(uint8_t timerNo, uint16_t pulseCount);
 extern bool_t timer_updatePWMDuty(uint8_t timerNo, uint16_t duty);
 
 
@@ -264,7 +296,7 @@ extern bool_t timer_detach(uint8_t timerNo);
 extern bool_t timer_start(uint8_t timerNo);
 
 //タイマーを停止
-#define timer_stop(timerNo)         vAHI_TimerStop (timerNo)           //自前版
+#define timer_stop(timerNo)         vAHI_TimerStop (timerNo)
 
 //16ビットのタイマーカウントを読む
 //例えばtimer_attachCallbackでコールバック関数をNULL指定し、タイマーのみを走らせて、この関数で経過時間を測定するなどが可能
@@ -273,12 +305,19 @@ extern bool_t timer_start(uint8_t timerNo);
 extern bool_t timer_attachAnalogWrite(uint8_t timerNo, uint16_t power, bool_t bUseSecondPin);
 extern bool_t timer_updateAnalogPower(uint8_t timerNo, uint16_t power);
 
-extern bool_t timer_attachMicroCounter(uint8_t timerNo);
+extern bool_t timer_attachMicroCounter(uint8_t timerNo, bool_t bStartNow);
 extern uint32_t timer_getMicroCount(uint8_t timerNo);
 
 extern bool_t timer0_attachCapture(uint8_t prescale, uint32_t *pu32Buffer, uint16_t u16BufferLength, bool_t bUseSecondPin);
 extern uint16_t timer0_getCaptureCount();
 extern bool_t timer0_captureCompleted();
+
+//取得した32ビットデータからパルスのLOW時間[μ秒]を取得する
+#define timer0_captureValueToLowTime(prescale, u32Value)    (prescale >= 4 ? (u32Value >> 16) << (prescale - 4) : (u32Value >> 16) >> (4 - prescale)) 
+
+//取得した32ビットデータからパルスのHIGH時間[μ秒]を取得する
+#define timer0_captureValueToHighTime(prescale, u32Value)    (prescale >= 4 ? (u32Value & 0xffff) << (prescale - 4) : (u32Value & 0xffff) >> (4 - prescale)) 
+
 
 extern void timer0_attachCounter(uint8_t prescale, uint16_t count, bool_t bUseSecondPin, INTERRUPTIONEDGES mode, void (*func)());
 
@@ -321,8 +360,8 @@ typedef enum {
 
 //共通関数
 extern bool_t serialx_putc(uint8_t serialNo, uint8_t u8Data);
-extern bool_t serialx_write(uint8_t serialNo, uint8_t *pau8Data, uint16_t u16Length);
-extern bool_t serialx_puts(uint8_t serialNo, uint8_t *pau8String);
+extern bool_t serialx_write(uint8_t serialNo, const uint8_t *pau8Data, uint16_t u16Length);
+//extern bool_t serialx_puts(uint8_t serialNo, uint8_t *pau8String);
 
 #endif //USE_SERIAL || USE_SERIAL1
 
@@ -336,11 +375,7 @@ extern uint16_t serial_getRxCount();
 extern uint16_t serial_getc();
 extern int16_t serial_readUntil(uint8_t u8Terminate, uint8_t *pu8Buffer, uint16_t u16Length);
 //extern bool_t serial_printf(const char* format, va_list args);
-#define serial_printf(...)   do{ SPRINTF_vRewind(); vfPrintf(SPRINTF_Stream, LB __VA_ARGS__); serialx_puts(E_AHI_UART_0, SPRINTF_pu8GetBuff()); }while(0)
-
-#ifdef SERIAL_HW_FLOW_CONTROL
-extern bool_t serial_ready();
-#endif
+#define serial_printf(...)   do{ SPRINTF_vRewind(); vfPrintf(SPRINTF_Stream, LB __VA_ARGS__); serialx_write(E_AHI_UART_0, (uint8_t *)SPRINTF_pu8GetBuff(), (uint16_t)strlen((const char *)SPRINTF_pu8GetBuff())); }while(0)
 
 //シリアル0を初期化する
 //ハードウェアフロー制御(RTS,CTS)を使用する場合は SERIAL_HW_FLOW_CONTROL をbasicio_module.h内で宣言する
@@ -356,7 +391,11 @@ extern bool_t serial_ready();
 #define serial_write(pau8Data, u16Length)   serialx_write(E_AHI_UART_0, pau8Data, u16Length)
 
 //シリアル0に文字列を書き出す。バッファがいっぱいの場合は書き出さずにFALSEを返す
-#define serial_puts(pau8String)             serialx_puts(E_AHI_UART_0, (uint8_t *)pau8String)
+//#define serial_puts(pau8String)             serialx_puts(E_AHI_UART_0, (uint8_t *)pau8String)
+
+//シリアル0に文字列を書き出す。バッファがいっぱいの場合は書き出さずにFALSEを返す
+#define serial_puts(pau8String)             serialx_write(E_AHI_UART_0, (uint8_t *)pau8String, (uint16_t)strlen(pau8String))
+
 
 //シリアル0の送信バッファのデータ数を返す
 #define serial_getTxCount()                 u16AHI_UartReadTxFifoLevel(E_AHI_UART_0)
@@ -375,16 +414,15 @@ extern bool_t serial_ready();
 #ifdef USE_SERIAL1
 
 extern bool_t serial1_initEx(SERIALBAUD baudRate, SERIALPARITY parity, SERIALBITLENGTH bitLength, SERIALSTOPBIT stopBit, bool_t bUseTxOnly, bool_t bUseSecondPin);
-#define serial_disable()                        vAHI_UartDisable(E_AHI_UART_1)
+#define serial1_disable()                        vAHI_UartDisable(E_AHI_UART_1)
 extern bool_t serial1_dataLost();
-extern uint16_t serial1_getRxCount();
 
 //シリアル1の受信バッファのデータ数を返す
-#define uint16_t serial1_getRxCount()           u16AHI_UartReadRxFifoLevel(E_AHI_UART_1)
-extern uint16_t serial1_getc();
+#define serial1_getRxCount()           u16AHI_UartReadRxFifoLevel(E_AHI_UART_1)
+extern int16_t serial1_getc();
 extern int16_t serial1_readUntil(uint8_t u8Terminate, uint8_t *pu8Buffer, uint16_t u16Length);
 //extern bool_t serial1_printf(const char* format, va_list args);
-#define serial1_printf(...)   do{ SPRINTF_vRewind(); vfPrintf(SPRINTF_Stream, LB __VA_ARGS__); serialx_puts(E_AHI_UART_1, SPRINTF_pu8GetBuff()); }while(0)
+#define serial1_printf(...)   do{ SPRINTF_vRewind(); vfPrintf(SPRINTF_Stream, LB __VA_ARGS__); serialx_write(E_AHI_UART_1, (uint8_t *)SPRINTF_pu8GetBuff(), (uint16_t)strlen((const char *)SPRINTF_pu8GetBuff())); }while(0)
 
 //シリアル1を初期化する
 //bUseSecondPin RXD   TXD
@@ -399,13 +437,16 @@ extern int16_t serial1_readUntil(uint8_t u8Terminate, uint8_t *pu8Buffer, uint16
 #define serial1_write(pau8Data, u16Length)  serialx_write(E_AHI_UART_1, pau8Data, u16Length)
 
 //シリアル1に文字列を書き出す。バッファがいっぱいの場合は書き出さずにFALSEを返す
-#define serial1_puts(pau8String)            serialx_puts(E_AHI_UART_1, (uint8_t *)pau8String)
+//#define serial1_puts(pau8String)            serialx_puts(E_AHI_UART_1, (uint8_t *)pau8String)
+
+//シリアル1に文字列を書き出す。バッファがいっぱいの場合は書き出さずにFALSEを返す
+#define serial1_puts(pau8String)            serialx_write(E_AHI_UART_1, (uint8_t *)pau8String, (uint16_t)strlen(pau8String))
 
 //シリアル1の送信バッファのデータ数を返す
 #define serial1_getTxCount()                u16AHI_UartReadTxFifoLevel(E_AHI_UART_1)
 
 //送信可能かを返す。フロー制御を持たないため常にTRUEを返す
-#define serial1_ready()                     TRUE
+//#define serial1_ready()                     TRUE
 
 #endif //USE_SERIAL1
 
@@ -414,6 +455,12 @@ extern int16_t serial1_readUntil(uint8_t u8Terminate, uint8_t *pu8Buffer, uint16
 /*
  * ＡＤＣ
  */
+
+#if defined(USE_ADC) || defined(USE_COMP)
+extern void adc_disable();
+#endif
+
+#ifdef USE_ADC
 
 typedef enum {
     ADC_SAMPLE_2 = E_AHI_AP_SAMPLE_2,
@@ -443,39 +490,44 @@ typedef enum {
 } ADCSOURCES;
 
 typedef enum {
-    ADC_SOURCE_BITMAP_1 = E_AHI_ADC_DMA_SRC_ADC_1_MASK,
+    ADC_SOURCE_BITMAP_1 = E_AHI_ADC_DMA_SRC_ADC_1_MASK,//1<<0
     ADC_SOURCE_BITMAP_2 = E_AHI_ADC_DMA_SRC_ADC_2_MASK,
     ADC_SOURCE_BITMAP_3 = E_AHI_ADC_DMA_SRC_ADC_3_MASK,
-    ADC_SOURCE_BITMAP_4 = E_AHI_ADC_DMA_SRC_ADC_4_MASK,
+    ADC_SOURCE_BITMAP_4 = E_AHI_ADC_DMA_SRC_ADC_4_MASK,//1<<3
 #ifdef TWELITE_RED
-    ADC_SOURCE_BITMAP_5 = E_AHI_ADC_DMA_SRC_ADC_5_MASK,
-    ADC_SOURCE_BITMAP_6 = E_AHI_ADC_DMA_SRC_ADC_6_MASK,
+    //ADC_SOURCE_BITMAP_5 = E_AHI_ADC_DMA_SRC_ADC_5_MASK,//1<<8
+    //ADC_SOURCE_BITMAP_6 = E_AHI_ADC_DMA_SRC_ADC_6_MASK,//1<<9
 #endif
-    ADC_SOURCE_BITMAP_TEMP = E_AHI_ADC_DMA_SRC_TEMP_MASK,
-    ADC_SOURCE_BITMAP_VOLT = E_AHI_ADC_DMA_SRC_VOLT_MASK
+    ADC_SOURCE_BITMAP_TEMP = E_AHI_ADC_DMA_SRC_TEMP_MASK,//1<<4
+    ADC_SOURCE_BITMAP_VOLT = E_AHI_ADC_DMA_SRC_VOLT_MASK//1<<5
 } ADCSOURCEBITMAP;
 
 typedef enum {
     ADC_INT_FULL = E_AHI_AP_INT_DMA_END_MASK,
-    ADC_INT_HALF = E_AHI_AP_INT_DMA_MID_MASK
+    ADC_INT_HALF = E_AHI_AP_INT_DMA_MID_MASK,
+    ADC_INT_HALF_FULL = (E_AHI_AP_INT_DMA_END_MASK | E_AHI_AP_INT_DMA_MID_MASK)
 } ADCINTERRUPTIONMODE;
 
 extern void adc_setVRef(uint32_t u32VRef);
 extern void adc_enable(ADCSAMPLES sample, ADCCLOCKS clock, bool_t bUseExternalVRef);
-extern void adc_disable();
 extern void adc_attachCallback(bool_t continuous, bool_t range2, ADCSOURCES source, void (*func)(uint16_t value));
 extern void adc_detachCallback();
 
 #ifdef USE_TIMER
-extern bool_t adc_attachCallbackWithTimerSampling(uint8_t timerNo, uint8_t prescale, uint16_t cycleCount,
-        bool_t range2, ADCSOURCEBITMAP bitmap, uint16 *pu16Buffer, uint16 u16BufferSize, bool_t bBufferWrap, ADCINTERRUPTIONMODE mode, void (*func)());
-extern bool_t adc_convertResults(ADCSOURCEBITMAP bitmap, uint16 *pu16Buffer, uint16 u16BufferSize);
+extern bool_t adc_attachCallbackWithTimer(uint8_t timerNo, uint8_t prescale, uint16_t cycleCount,
+        bool_t range2, ADCSOURCEBITMAP bitmap, uint16_t *pu16Buffer, uint16_t u16BufferSize, bool_t bBufferWrap, ADCINTERRUPTIONMODE mode, void (*func)());
+extern bool_t adc_convertResults(ADCSOURCEBITMAP bitmap, uint16_t *pu16Buffer, uint16_t u16BufferSize);
 #endif
+
+#endif //USE_ADC
+
 
 
 /*
  *　コンパレータ
  */
+
+#ifdef USE_COMP
 
 typedef enum {
     COMP_SIGNAL_COMP1M = 0,
@@ -503,15 +555,21 @@ extern bool_t comp_enable(COMPSIGNALSOURCE signal, COMPVREFSOURCE vref, COMPHIST
 extern bool_t comp_attachCallback(INTERRUPTIONEDGES mode, void (*func)());
 extern void comp_disable();
 extern bool_t comp_setWake(INTERRUPTIONEDGES mode);
+extern bool_t comp_read();
 
 //コンパレータの比較結果を取得します。入力が基準より高い場合にTRUE(1)となり、低い場合にFALSE(0)を返します
 //この関数の実行にはADCモジュールの電源が必要です(OFFだと再起動かかります)。comp_enabe()でADCモジュールがONされますので、意図的にOFFしない限り大丈夫
-#define comp_read()                     (u8AHI_ComparatorStatus() & E_AHI_AP_COMPARATOR_MASK_1)
+//#define comp_read()                     (u8AHI_ComparatorStatus() & E_AHI_AP_COMPARATOR_MASK_1)
+
+#endif //USE_COMP
+
 
 
 /*
  *　パルスカウンタ
  */
+
+#ifdef USE_PC
 
 typedef enum {
     PC_DEBOUNCE_0_MAX100KHZ = 0,
@@ -558,11 +616,15 @@ extern bool_t pc32_setWake(PCDEBOUNCEMODE debounce, uint32_t count, uint8_t pinN
 //読み取ったらフラグはクリアされます。
 #define pc32_countReached()             pc_countReached(0)
 
+#endif //USE_PC
+
 
 
 /*
  * Ｉ２Ｃ
  */
+
+#ifdef USE_I2C
 
 typedef enum {
     I2C_ADDRESS_7BIT = 7,
@@ -598,10 +660,15 @@ extern bool_t i2c_writeOnly(uint16_t u16Address, const uint8* pu8Data, uint8_t u
 extern bool_t i2c_readOnly(uint16_t u16Address, uint8* pu8Data, uint8_t u8Length);
 extern int16_t i2c_readByteOnly(uint16_t u16Address);
 
+#endif //USE_I2C
+
+
 
 /*
  * ＳＰＩ
  */
+
+#ifdef USE_SPI
 
 typedef enum {
     SPI_MODE_0,
@@ -635,23 +702,20 @@ extern uint8_t spi_readByte(int8_t slaveNo, uint8_t u8Command);
 extern void spi_read(int8_t slaveNo, uint8_t u8Command, uint8* pu8Data, uint8_t u8Length);
 extern void spi_writeByte(int8_t slaveNo, uint8_t u8Command, uint8_t u8Data);
 
+#endif //USE_SPI
+
 
 /*
  * 無線通信
  */
 
-#ifdef USE_RADIO
+#if defined(USE_RADIO) || defined(USE_RADIO_TXONLY)
 //#include "sprintf.h"
 
-extern uint8_t u8NumRadioTx;
-
-#define RADIO_ADDR_BROADCAST   TOCONET_MAC_ADDR_BROADCAST
-
-//送信中のデータは無い
-#define radio_txCompleted()       (u8NumRadioTx == 0)
+#define RADIO_ADDR_BROADCAST    TOCONET_MAC_ADDR_BROADCAST
 
 extern void radio_attachTxCallback(void (*func)(uint8_t u8CbId, bool_t bSuccess));
-#ifdef RX_ON_IDLE
+#ifdef USE_RADIO
 extern void radio_attachRxCallback(void (*func)(uint32_t u32SrcAddr, uint8_t u8CbId, uint8_t u8DataType, uint8_t *pu8Data, uint8_t u8Length, uint8_t u8Lqi));
 #endif
 
@@ -659,11 +723,12 @@ extern void radio_attachRxCallback(void (*func)(uint32_t u32SrcAddr, uint8_t u8C
 #define radio_detachRxCallback()  radio_attachRxCallback(NULL)
 
 extern int16_t radio_write(uint32_t u32DestAddr, uint8_t *pu8Data, uint8_t u8Length, uint8_t u8DataType);
-extern int16_t radio_puts(uint32_t u32DestAddr, uint8_t *pu8String);
+extern int16_t radio_puts(uint32_t u32DestAddr, const char *pu8String);
 //extern bool_t radio_printf(uint32_t u32DestAddr, const char* format, va_list args);
 
-#define radio_printf(u32DestAddr, ...)     do{ SPRINTF_vRewind(); vfPrintf(SPRINTF_Stream, LB __VA_ARGS__); radio_puts(u32DestAddr, SPRINTF_pu8GetBuff()); }while(1)
-#endif
+#define radio_printf(u32DestAddr, ...)     do{ SPRINTF_vRewind(); vfPrintf(SPRINTF_Stream, LB __VA_ARGS__); radio_puts(u32DestAddr, SPRINTF_pu8GetBuff()); }while(0)
+
+#endif //USE_RADIO || USE_RADIO_TXONLY
  
 
 /*
@@ -671,12 +736,26 @@ extern int16_t radio_puts(uint32_t u32DestAddr, uint8_t *pu8String);
  */
 
 #ifdef USE_EEPROM
-//#include "eeprom_6x.h"
 
-#define eep_read(adr, buf, len)     EEP_6x_bRead(adr, len, buf)
-#define eep_write(adr, buf, len)    EEP_6x_bWrite(adr, len, buf)
+extern uint16_t eeprom_getSegmentCount();
+extern uint8_t eeprom_getSegmentSize();
+extern bool_t eeprom_erased(uint16_t u16SegIndex);
 
-#endif
+
+//EEPROMを初期化(消去)します。
+//全てのビットは0にセットされます。
+//成功でTRUEを返します。
+#define eeprom_erase(u16SegIndex)                                   (iAHI_EraseEEPROMsegment(u16SegIndex) == 0)
+
+//EEPROMからデータを読み出します。
+//成功でTRUEを返します。
+#define eeprom_read(u16SegIndex, u8Offset, pu8Buffer, u8Length)     (iAHI_ReadDataFromEEPROMsegment(u16SegIndex, u8Offset, pu8Buffer, u8Length) == 0)
+
+//EEPROMにデータを書き込みます。
+//成功でTRUEを返します。
+#define eeprom_write(u16SegIndex, u8Offset, pu8Buffer, u8Length)    (iAHI_WriteDataIntoEEPROMsegment(u16SegIndex, u8Offset, pu8Buffer, u8Length) == 0)
+
+#endif //USE_EEPROM
 
 
 /*
@@ -684,10 +763,13 @@ extern int16_t radio_puts(uint32_t u32DestAddr, uint8_t *pu8String);
  */
 
 #ifdef USE_FLASH
+
 extern bool_t flash_erase(uint8_t sector);
-extern bool_t flash_write(uint8_t sector, uint32_t offset, uint8_t *pu8Data, uint16_t u16DataLength);
-extern bool_t flash_read(uint8 sector, uint32 offset, uint8_t *pu8Data, uint16_t u16DataLength);
-#endif
+extern bool_t flash_erased(uint8_t sector, uint16_t offset, uint16_t u16Length);
+extern bool_t flash_write(uint8_t sector, uint16_t offset, uint8_t *pu8Data, uint16_t u16Length);
+extern bool_t flash_read(uint8_t sector, uint32 offset, uint8_t *pu8Data, uint16_t u16Length);
+
+#endif //USE_FLASH
 
 
 

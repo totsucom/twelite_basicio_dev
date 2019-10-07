@@ -102,6 +102,7 @@ include ../../../../MkFiles/toconet.mk
 # INCFLAGS に追加します。
 #
 #INCFLAGS += -I../dummy 
+#INCFLAGS += -I../../../../Tools/VSCode/include/chiplib/TOF/Include 
 
 ### Additional user objects (.a,.o)
 # 追加でリンクしたいライブラリ、オブジェクトファイルを指定します。
