@@ -9,7 +9,7 @@
 /*
  * 機能のON/OFF
  */
-//#define USE_DIO           //ＤＩＯ関数を使用する
+#define USE_DIO           //ＤＩＯ関数を使用する
 //#define USE_TIMER         //タイマー系（タイマー、ＰＷＭなど）関数を使用する
 //#define USE_SERIAL        //シリアル0関数を使用する
 //#define USE_SERIAL1       //シリアル1関数を使用する
