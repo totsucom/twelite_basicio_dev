@@ -94,8 +94,8 @@
 #endif
 
 //DIO割り込みのコールバック関数登録バッファの大きさ
-#ifndef MAX_DIO_INTERRUPT
-#define MAX_DIO_INTERRUPT 2
+#ifndef MAX_DIO_INTERRUPT_FUNCS
+#define MAX_DIO_INTERRUPT_FUNCS 5
 #endif
 
 /*未対応
@@ -132,6 +132,21 @@
 //シリアル1受信FIFOバッファ(16～2047)
 #ifndef SERIAL1_RX_BUFFER_SIZE
 #define SERIAL1_RX_BUFFER_SIZE 32
+#endif
+
+//I2Cスレーブでマスタの書き込むデータを受けるバッファサイズ
+#ifndef I2CS_MW_BUFFER_SIZE
+#define I2CS_MW_BUFFER_SIZE 20
+#endif
+
+//I2Cスレーブでマスターの読み込みが行われるときにデータが準備されなかった場合に返す値
+#ifndef I2CS_MR_DATA_NOT_READY
+#define I2CS_MR_DATA_NOT_READY 0
+#endif
+
+//I2Cスレーブでマスターの読み込みが行われるとき、準備したデータの範囲外を参照した場合に返す値
+#ifndef I2CS_MR_OUT_OF_RANGE
+#define I2CS_MR_OUT_OF_RANGE 255
 #endif
 
 //無線送信データが相手に届かない場合、リトライ送信する回数
@@ -215,6 +230,14 @@ extern bool_t pb_currentState(uint8_t pinNo);
 extern void pb_reset();
 #endif
 
+typedef enum {
+    DISABLE,        //dio_attachCallback,dio_setWake,timer0_attachCounter
+    RISING,         //dio_attachCallback,dio_setWake,timer0_attachCounter
+    FALLING,        //dio_attachCallback,dio_setWake,timer0_attachCounter
+    BOTHEDGE        //timer0_attachCounter
+} INTERRUPTIONEDGES;
+
+
 
 
 /*
@@ -244,13 +267,6 @@ extern bool_t dio_write(uint8_t pinNo, uint8_t value);
 //DIO0～DIO19の入力状態を一度に読み込む。bit=0:LOW/1:HIGH
 #define dio_readAll()           u32AHI_DioReadInput()
 
-
-typedef enum {
-    DISABLE,        //dio_attachCallback,dio_setWake,timer0_attachCounter
-    RISING,         //dio_attachCallback,dio_setWake,timer0_attachCounter
-    FALLING,        //dio_attachCallback,dio_setWake,timer0_attachCounter
-    BOTHEDGE        //timer0_attachCounter
-} INTERRUPTIONEDGES;
 
 extern bool_t dio_attachCallback(uint8_t pinNo, INTERRUPTIONEDGES mode, void (*func)(uint32_t u32DioBitmap));
 extern bool_t dio_detach(uint8_t pinNo);
@@ -315,11 +331,13 @@ extern bool_t timer0_captureCompleted();
 //取得した32ビットデータからパルスのLOW時間[μ秒]を取得する
 #define timer0_captureValueToLowTime(prescale, u32Value)    (prescale >= 4 ? (u32Value >> 16) << (prescale - 4) : (u32Value >> 16) >> (4 - prescale)) 
 
-//取得した32ビットデータからパルスのHIGH時間[μ秒]を取得する
-#define timer0_captureValueToHighTime(prescale, u32Value)    (prescale >= 4 ? (u32Value & 0xffff) << (prescale - 4) : (u32Value & 0xffff) >> (4 - prescale)) 
+//取得した32ビットデータからパルスの周期[μ秒]を取得する
+#define timer0_captureValueToCycleTime(prescale, u32Value)  (prescale >= 4 ? (u32Value & 0xffff) << (prescale - 4) : (u32Value & 0xffff) >> (4 - prescale)) 
 
+//取得した32ビットデータからパルスのパルス幅[μ秒]を取得する
+#define timer0_captureValueToPulseTime(prescale, u32Value)  (timer0_captureValueToCycleTime(prescale, u32Value) - timer0_captureValueToLowTime(prescale, u32Value))
 
-extern void timer0_attachCounter(uint8_t prescale, uint16_t count, bool_t bUseSecondPin, INTERRUPTIONEDGES mode, void (*func)());
+extern bool_t timer0_attachCounter(uint8_t prescale, uint16_t count, bool_t bUseSecondPin, INTERRUPTIONEDGES mode, void (*func)());
 
 #endif //USE_TIMER
 
@@ -372,7 +390,7 @@ extern bool_t serial_initEx(SERIALBAUD baudRate, SERIALPARITY parity, SERIALBITL
 extern void serial_disable();
 extern bool_t serial_dataLost();
 extern uint16_t serial_getRxCount();
-extern uint16_t serial_getc();
+extern int16_t serial_getc();
 extern int16_t serial_readUntil(uint8_t u8Terminate, uint8_t *pu8Buffer, uint16_t u16Length);
 //extern bool_t serial_printf(const char* format, va_list args);
 #define serial_printf(...)   do{ SPRINTF_vRewind(); vfPrintf(SPRINTF_Stream, LB __VA_ARGS__); serialx_write(E_AHI_UART_0, (uint8_t *)SPRINTF_pu8GetBuff(), (uint16_t)strlen((const char *)SPRINTF_pu8GetBuff())); }while(0)
@@ -511,7 +529,7 @@ typedef enum {
 extern void adc_setVRef(uint32_t u32VRef);
 extern void adc_enable(ADCSAMPLES sample, ADCCLOCKS clock, bool_t bUseExternalVRef);
 extern void adc_attachCallback(bool_t continuous, bool_t range2, ADCSOURCES source, void (*func)(uint16_t value));
-extern void adc_detachCallback();
+extern void adc_detach();
 
 #ifdef USE_TIMER
 extern bool_t adc_attachCallbackWithTimer(uint8_t timerNo, uint8_t prescale, uint16_t cycleCount,
@@ -557,9 +575,7 @@ extern void comp_disable();
 extern bool_t comp_setWake(INTERRUPTIONEDGES mode);
 extern bool_t comp_read();
 
-//コンパレータの比較結果を取得します。入力が基準より高い場合にTRUE(1)となり、低い場合にFALSE(0)を返します
-//この関数の実行にはADCモジュールの電源が必要です(OFFだと再起動かかります)。comp_enabe()でADCモジュールがONされますので、意図的にOFFしない限り大丈夫
-//#define comp_read()                     (u8AHI_ComparatorStatus() & E_AHI_AP_COMPARATOR_MASK_1)
+#define comp_detach()               comp_attachCallback(FALLING, NULL)
 
 #endif //USE_COMP
 
@@ -584,10 +600,14 @@ typedef enum {
     PC_INT_BITMAP_32 = E_AHI_SYSCTRL_PC0_MASK
 } PCINTBITMAPS;
 
-extern bool_t pc_attachCallback(uint8_t pcNo, PCDEBOUNCEMODE debounce, uint16_t count, bool_t bUseSecondPin, INTERRUPTIONEDGES mode, void (*func)());
+extern bool_t pc_enable(uint8_t pcNo, PCDEBOUNCEMODE debounce, uint16_t count, bool_t bUseSecondPin, INTERRUPTIONEDGES mode, bool_t bStartNow);
+extern bool_t pc_disable(uint8_t pcNo);
+extern bool_t pc_attachCallback(uint8_t pcNo, void (*func)());
 extern uint16_t pc_read(uint8_t pcNo);
 extern bool_t pc_countReached(uint8_t pcNo);
-extern bool_t pc_setWake(uint8_t pcNo, PCDEBOUNCEMODE debounce, uint16_t count, bool_t bUseSecondPin, INTERRUPTIONEDGES mode);
+
+//コールバック関数を削除します。パルスカウンタと割り込みは停止しません。
+#define pc_detach(pcNo)                 pc_attachCallback(pcNo, NULL)
 
 //パルスカウンタを開始します。カウンタは変更されません。pc_attachCallback()の後は実行する必要があります。
 #define pc_start(pcNo)                  bAHI_StartPulseCounter(pcNo)
@@ -598,10 +618,27 @@ extern bool_t pc_setWake(uint8_t pcNo, PCDEBOUNCEMODE debounce, uint16_t count, 
 //パルスカウンタをクリア（０）にします。
 #define pc_clear(pcNo)                  bAHI_Clear16BitPulseCounter(pcNo)
 
+//パルスカウンタを起床条件に設定します
+//事前にpc_enable()でパルスカウンタを開始しておく必要があります。
+//この関数の実行でカウンタはクリアされません。必要に応じてpc_clear()を呼び出してください。
+//debounceにPC_DEBOUNCE_0_MAX100KHZ以外を使用する場合はスリープで32kHzRCオシレータを停止してはいけません。
+//スリープ関数の直前に呼び出してください。
+#define pc_setWake()                    u32AHI_PulseCounterStatus()    //clear flag
 
-extern bool_t pc32_attachCallback(PCDEBOUNCEMODE debounce, uint32_t count, uint8_t pinNo, INTERRUPTIONEDGES mode, void (*func)());
+extern bool_t pc32_enable(PCDEBOUNCEMODE debounce, uint32_t count, uint8_t pinNo, INTERRUPTIONEDGES mode, bool_t bStartNow);
 extern uint32_t pc32_read();
 extern bool_t pc32_setWake(PCDEBOUNCEMODE debounce, uint32_t count, uint8_t pinNo, INTERRUPTIONEDGES mode);
+
+//32ビットパルスカウンタを無効にします
+#define pc32_disable()                  pc_disable(0)
+
+//32ビットパルスカウンタにコールバック関数を登録します。
+//パルスカウンタは事前にpc32_enable()で開始しておく必要があります。
+//func=NULLで登録を解除できます(パルスカウンタは停止しません)。
+#define pc32_attachCallback(func)       pc_attachCallback(0, func)
+
+//コールバック関数を削除します。パルスカウンタと割り込みは停止しません。
+#define pc32_detach()                   pc_attachCallback(0, NULL)
 
 //パルスカウンタを開始します。カウンタは変更されません。pc32_attachCallback()の後は実行する必要があります。
 #define pc32_start()                    bAHI_StartPulseCounter(0)
@@ -615,6 +652,13 @@ extern bool_t pc32_setWake(PCDEBOUNCEMODE debounce, uint32_t count, uint8_t pinN
 //カウンタが設定値に到達したかどうかを返します。
 //読み取ったらフラグはクリアされます。
 #define pc32_countReached()             pc_countReached(0)
+
+//パルスカウンタを起床条件に設定します
+//事前にpc_enable()でパルスカウンタを開始しておく必要があります。
+//この関数の実行でカウンタはクリアされません。必要に応じてpc_clear()を呼び出してください。
+//debounceにPC_DEBOUNCE_0_MAX100KHZ以外を使用する場合はスリープで32kHzRCオシレータを停止してはいけません。
+//スリープ関数の直前に呼び出してください。
+#define pc32_setWake()                  u32AHI_PulseCounterStatus()    //clear flag
 
 #endif //USE_PC
 
@@ -643,7 +687,7 @@ typedef enum {
 } I2CCLOCKS;
 
 extern void i2c_enable(I2CCLOCKS clock, bool_t bUseSecondPin);
-#define i2c_disable             vAHI_SiMasterDisable()
+extern void i2c_disable();
 
 //コマンド書き込みを伴う書き込み
 extern bool_t i2c_write(uint16_t u16Address, uint8_t u8Command, const uint8* pu8Data, uint8_t u8Length);
@@ -655,12 +699,24 @@ extern int16_t i2c_readByte(uint16_t u16Address, uint8_t u8Command);
 
 //書き込むだけ
 extern bool_t i2c_writeOnly(uint16_t u16Address, const uint8* pu8Data, uint8_t u8Length);
+extern bool_t i2c_writeByteOnly(uint16_t u16Address, uint8_t u8Data);
 
 //読み込むだけ
 extern bool_t i2c_readOnly(uint16_t u16Address, uint8* pu8Data, uint8_t u8Length);
 extern int16_t i2c_readByteOnly(uint16_t u16Address);
 
 #endif //USE_I2C
+
+
+/*
+ * スレーブ
+ */
+
+#ifdef USE_I2CS
+extern void i2cs_enable(uint8_t u16Address, bool_t b10BitAddress, bool_t bUseSecondPin, void (*prepareFunc)(uint8_t), void (*receivedFunc)(uint8_t*, uint8_t));
+extern void i2cs_disable();
+extern void i2cs_write(const uint8_t *pau8Data, uint8_t u8Length);
+#endif //USE_I2CS
 
 
 
@@ -714,6 +770,10 @@ extern void spi_writeByte(int8_t slaveNo, uint8_t u8Command, uint8_t u8Data);
 
 #define RADIO_ADDR_BROADCAST    TOCONET_MAC_ADDR_BROADCAST
 
+extern void radio_attachCallback(void (*txFunc)(uint8_t u8CbId, bool_t bSuccess), void (*rxFunc)(uint32_t u32SrcAddr, uint8_t u8CbId, uint8_t u8DataType, uint8_t *pu8Data, uint8_t u8Length, uint8_t u8Lqi));
+#define radio_detach()          radio_attachCallback(NULL, NULL)
+
+/*
 extern void radio_attachTxCallback(void (*func)(uint8_t u8CbId, bool_t bSuccess));
 #ifdef USE_RADIO
 extern void radio_attachRxCallback(void (*func)(uint32_t u32SrcAddr, uint8_t u8CbId, uint8_t u8DataType, uint8_t *pu8Data, uint8_t u8Length, uint8_t u8Lqi));
@@ -721,12 +781,13 @@ extern void radio_attachRxCallback(void (*func)(uint32_t u32SrcAddr, uint8_t u8C
 
 #define radio_detachTxCallback()  radio_attachTxCallback(NULL)
 #define radio_detachRxCallback()  radio_attachRxCallback(NULL)
+*/
 
 extern int16_t radio_write(uint32_t u32DestAddr, uint8_t *pu8Data, uint8_t u8Length, uint8_t u8DataType);
-extern int16_t radio_puts(uint32_t u32DestAddr, const char *pu8String);
+extern int16_t radio_puts(uint32_t u32DestAddr, const char *pu8String, uint8_t u8DataType);
 //extern bool_t radio_printf(uint32_t u32DestAddr, const char* format, va_list args);
 
-#define radio_printf(u32DestAddr, ...)     do{ SPRINTF_vRewind(); vfPrintf(SPRINTF_Stream, LB __VA_ARGS__); radio_puts(u32DestAddr, SPRINTF_pu8GetBuff()); }while(0)
+#define radio_printf(u32DestAddr,u8DataType, ...)     do{ SPRINTF_vRewind(); vfPrintf(SPRINTF_Stream, LB __VA_ARGS__); radio_puts(u32DestAddr, SPRINTF_pu8GetBuff(), u8DataType); }while(0)
 
 #endif //USE_RADIO || USE_RADIO_TXONLY
  

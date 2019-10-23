@@ -111,7 +111,7 @@ void sb_puts(const char *str) {
 
 //文字列バッファから改行コードを取り除く
 void sb_removeCrLf() {
-    char *p = sb_getBuffer();
+    char *p = (char *)sb_getBuffer();
     uint8_t o = 0;
     do {
         if (*p == '\r' || *p == '\n') {
@@ -205,7 +205,7 @@ bool_t dio_write(uint8_t pinNo, uint8_t value) {
 
 
 //割り込みルーチンのポインタを保持
-void (*dioCallbackFunctions[MAX_DIO_INTERRUPT])(uint32_t);  //コールバック関数のポインタ
+void (*dioCallbackFunctions[MAX_DIO_INTERRUPT_FUNCS])(uint32_t);  //コールバック関数のポインタ
 uint8_t dioCallbackFuncIndices[20];        //ピン番号0-19に対するdioCallbackFunctions[]のインデックスを保持, 0xffで初期化
 
 //pinNO=0..19 mode=RISING(立ち上がり)/FALLING(立ち下がり)/DISABLE funcは引数を持たない関数
@@ -220,7 +220,7 @@ bool_t dio_attachCallback(uint8_t pinNo, INTERRUPTIONEDGES mode, void (*func)(ui
 
     uint8_t i, freeIndex = 0xff;
     dioCallbackFuncIndices[pinNo] = 0xff;
-    for(i = 0; i < MAX_DIO_INTERRUPT; i++) {
+    for(i = 0; i < MAX_DIO_INTERRUPT_FUNCS; i++) {
         if (dioCallbackFunctions[i] == func) {
             //コールバック関数がすでに登録済みなので、ここを参照
             dioCallbackFuncIndices[pinNo] = i;
@@ -230,7 +230,7 @@ bool_t dio_attachCallback(uint8_t pinNo, INTERRUPTIONEDGES mode, void (*func)(ui
             freeIndex = i;
         }
     }
-    if (i == MAX_DIO_INTERRUPT) {
+    if (i == MAX_DIO_INTERRUPT_FUNCS) {
         if (freeIndex == 0xff) return FALSE;    //空きが無い
 
         //処理ルーチンのポインタを新規登録
@@ -383,16 +383,18 @@ bool_t timer_attachPWM(uint8_t timerNo, uint8_t prescale, uint16_t cycleCount, u
         FALSE, //bool_t bIntRiseEnable, 
         FALSE, //bool_t bIntPeriodEnable, 
         TRUE);//bool_t bOutputEnable);
+
     vAHI_TimerConfigureOutputs(timerNo,
         bStartFromHi, //TRUE:出力反転
         TRUE); //disable clock gation input
+
     sTimerApp[timerNo].u8Mode = 2; //PWM    
     sTimerApp[timerNo].bStartFromHi = bStartFromHi;
     sTimerApp[timerNo].u16HiCount = bStartFromHi ? pulseCount : cycleCount - pulseCount; //開始から変化までのカウント
     sTimerApp[timerNo].u16LoCount = cycleCount;             //開始から終了までのカウント=サイクル
     timerCallbackFunctions[timerNo] = NULL;
 
-    if (bSTartNow) timer_start(timerNo);
+    if (bStartNow) timer_start(timerNo);
     return TRUE;
 }
 
@@ -601,7 +603,7 @@ bool_t timer0_captureCompleted() {
 
 //タイマー０でパルス幅をサンプリング＆バッファに保存する
 //prescale=0..16, pu32Buffer=バッファ, u16BufferLength=バッファのサイズ, bUseSecondPin=入力ピンの選択。FALSE:DIO9/TRUE:DIO3
-//バッファの上位16ビットにLレベルの期間、下位に周期を示すカウンタ値が格納される
+//バッファの上位16ビットにLOWレベルの期間、下位16ビットにHIGHレベルの期間を示すカウンタ値が格納される
 //1カウント値あたりの時間は 1 / (16000000 / (2^prescale)) 秒である
 bool_t timer0_attachCapture(uint8_t prescale, uint32_t *pu32Buffer, uint16_t u16BufferLength, bool_t bUseSecondPin) {
     if (pu32Buffer == NULL || u16BufferLength == 0) return FALSE;
@@ -614,15 +616,23 @@ bool_t timer0_attachCapture(uint8_t prescale, uint32_t *pu32Buffer, uint16_t u16
 
     vAHI_TimerSetLocation(0, bUseSecondPin, FALSE);
 
+    if ((timerFineGrainDIOControlValue & 0x02) != 0) {
+        //DIOを汎用からタイマー用に切り替える
+        timerFineGrainDIOControlValue &= 0xfd;
+        vAHI_TimerFineGrainDIOControl(timerFineGrainDIOControlValue);
+    }
+
     vAHI_TimerEnable(0,
         prescale,   //u8Prescale,
         FALSE,  //bIntRiseEnable,
         TRUE,   //bIntPeriodEnable,
         FALSE); //bOutputEnable
+
     vAHI_TimerConfigureInputs(0,
         FALSE,  //bInvCapt,
         FALSE); //bEventEdge
     vAHI_TimerStartCapture(0);
+
     return TRUE;
 }
 
@@ -651,10 +661,22 @@ bool_t timer_detach(uint8_t timerNo) {
 }
 
 //bUseSecondPin=FALSE:DIO8/TRUE:DIO2
-void timer0_attachCounter(uint8_t prescale, uint16_t count, bool_t bUseSecondPin, INTERRUPTIONEDGES mode, void (*func)()) {
+bool_t timer0_attachCounter(uint8_t prescale, uint16_t count, bool_t bUseSecondPin, INTERRUPTIONEDGES mode, void (*func)()) {
+    if (mode == DISABLE) {
+        timer_detach(0);
+        return TRUE;
+    }
 
     sTimerApp[0].u8Mode = 6; //Counter
     timerCallbackFunctions[0] = func;
+
+    vAHI_TimerSetLocation(0, bUseSecondPin, FALSE);
+
+    if ((timerFineGrainDIOControlValue & 0x01) != 0) {
+        //DIOを汎用からタイマー用に切り替える
+        timerFineGrainDIOControlValue &= 0xfe;
+        vAHI_TimerFineGrainDIOControl(timerFineGrainDIOControlValue);
+    }
 
     vAHI_TimerEnable(0,
         prescale,   //uint8 u8Prescale,
@@ -673,6 +695,7 @@ void timer0_attachCounter(uint8_t prescale, uint16_t count, bool_t bUseSecondPin
     vAHI_TimerStartRepeat(0,
         count,  //no use
         count); //本命
+    return TRUE;
 }
 
 
@@ -866,7 +889,7 @@ uint16_t serial_getRxCount() {
 }
 
 //シリアル0から1バイト読み出す。データが無い場合は-1を返す
-uint16_t serial_getc() {
+int16_t serial_getc() {
 #ifdef SERIAL_HW_FLOW_CONTROL
     serial0UpdateRxBuffer();         //データがあれば読み込む
     return que_get(&sSerialRxQue0); //無いときは-1を返す
@@ -1043,8 +1066,8 @@ void adc_disable() {
     if (bAHI_APRegulatorEnabled()) {
         vAHI_ApConfigure(E_AHI_AP_REGULATOR_DISABLE,    //OFF
             E_AHI_AP_INT_DISABLE,                       //OFF
-            ADC_SAMPLE_4,
-            ADC_CLOCK_500KHZ,
+            E_AHI_AP_SAMPLE_4,//ADC_SAMPLE_4,
+            E_AHI_AP_CLOCKDIV_500KHZ,//ADC_CLOCK_500KHZ,
             E_AHI_AP_INTREF);
     }
 }
@@ -1131,7 +1154,7 @@ void adc_attachCallback(bool_t continuous, bool_t range2, ADCSOURCES source, voi
     vAHI_AdcStartSample(); // ADC開始
 }
 
-void adc_detachCallback()  {
+void adc_detach()  {
 
     //adc_attachCallbackWithTimer()の後片付け
     if (adcLastSource == 0xff) {
@@ -1139,6 +1162,7 @@ void adc_detachCallback()  {
 
         vAHI_AdcDisableSampleBuffer();//完了時にこれをやっとかないと2回目が実行できない
 
+#ifdef USE_TIMER
         //タイマー停止
         uint8_t i;
         for(i=0; i<=4; i++) {
@@ -1147,6 +1171,7 @@ void adc_detachCallback()  {
                 break;
             }
         }
+#endif
     }
 
     adcCallbackFunction = NULL;
@@ -1507,22 +1532,20 @@ bool_t comp_read() {
 static void (*pcCallbackFunctions[2])();
 
 
-//u32AHI_PulseCounterStatus()の値を保持
+//u32AHI_PulseCounterStatus()の値を保持(1回読むとフラグがクリアされるので)
 static uint32_t pcCountStatus;
+
 
 //パルスカウンタを開始します。入力ピンは事前にdio_pinMode()でINPUTまたはINPUT_PULLUPに設定しておいてください
 //pcNo=0/1, mode=RISING/FALLING, count=何回目でコールバック関数を呼び出すかを指定
 //bUseSecondPin PC0  PC1
 //       FALSE  DIO1 DIO8
 //       TRUE   DIO4 DIO5
-//カウンタは０にクリアされますが、pc_start()を実行するまでパルスカウンタは開始されません。
-//func=NULLが設定可能です。カウンタが到達したかどうかは割り込みまたはポーリングでpc_countReached()を調べることができます。
-//カウンタが到達後も継続してカウントされるため必要に応じてpc_clear()を呼び出してください
-bool_t pc_attachCallback(uint8_t pcNo, PCDEBOUNCEMODE debounce, uint16_t count, bool_t bUseSecondPin, INTERRUPTIONEDGES mode, void (*func)()) {
+bool_t pc_enable(uint8_t pcNo, PCDEBOUNCEMODE debounce, uint16_t count, bool_t bUseSecondPin, INTERRUPTIONEDGES mode, bool_t bStartNow) {
     if (pcNo > 1) return FALSE;
     if (mode != FALLING && mode != RISING) return FALSE;
 
-    pcCallbackFunctions[pcNo] = func;
+    pcCallbackFunctions[pcNo] = NULL;
 
     vAHI_PulseCounterSetLocation(pcNo, bUseSecondPin);
 
@@ -1538,10 +1561,46 @@ bool_t pc_attachCallback(uint8_t pcNo, PCDEBOUNCEMODE debounce, uint16_t count, 
                             //E_AHI_PC_COMBINE_OFF (0 - Pulse counters not combined)
                             //E_AHI_PC_COMBINE_ON0 (1 - Counters combined using PC0 input)
                             //E_AHI_PC_COMBINE_ON1 (2 - Counters combined using PC1 input)
-        func != NULL);      //bool_t bIntEnable);
+        TRUE);              //bool_t bIntEnable); カウンタリセットに必要。
+        //↑ここで割り込み有効にするとu32AHI_PulseCounterStatus()のフラグが立たなくなる。
+        //そのため割り込みからpcCountStatusのフラグを立てている
+        //この割り込みフラグはスリープに影響しない(テストで確認)
 
     bAHI_SetPulseCounterRef(pcNo, (uint32_t)(count - 1));
     pc_clear(pcNo);
+    if (bStartNow) pc_start(pcNo);
+
+    return TRUE;
+}
+
+//パルスカウンタを無効にします
+bool_t pc_disable(uint8_t pcNo) {
+    if (pcNo > 1) return FALSE;
+
+    pcCallbackFunctions[pcNo] = NULL;
+
+    bAHI_PulseCounterConfigure(
+        pcNo,               //パルスカウンター0または1、結合する場合は0
+        FALSE,              //FALSE:RISING TRUE:FALLING
+        0,                  //デバウンス
+                            //0: No debounce (maximum input frequency of 100kHz)
+                            //1: 2 samples (maximum input frequency of 3.7kHz)
+                            //2: 4 samples (maximum input frequency of 2.2kHz)
+                            //3: 8 samples (maximum input frequency of 1.2kHz)
+        0,                  //結合
+                            //E_AHI_PC_COMBINE_OFF (0 - Pulse counters not combined)
+                            //E_AHI_PC_COMBINE_ON0 (1 - Counters combined using PC0 input)
+                            //E_AHI_PC_COMBINE_ON1 (2 - Counters combined using PC1 input)
+        FALSE);              //bool_t bIntEnable);
+        return TRUE;
+}
+
+//パルスカウンタのコールバック関数を登録します。
+//パルスカウンタは事前にpc_enable()で開始しておく必要があります。
+//func=NULLで登録を解除できます(パルスカウンタは停止しません)。
+bool_t pc_attachCallback(uint8_t pcNo, void (*func)()) {
+    if (pcNo > 1) return FALSE;
+    pcCallbackFunctions[pcNo] = func;
     return TRUE;
 }
 
@@ -1571,55 +1630,12 @@ bool_t pc_countReached(uint8_t pcNo) {
     return r;
 }
 
-//パルスカウンタを起床条件に設定します
-//pcNo=0/1, mode=RISING/FALLING, count=何回目で起床するかを指定
-//bUseSecondPin PC0  PC1
-//       FALSE  DIO1 DIO8
-//       TRUE   DIO4 DIO5
-//DIOはINPUTモードに設定されます。
-//カウンタはクリアされ、カウントを開始します。そのため、この関数はsleep()の直前に実行してください。
-//debounceにPC_DEBOUNCE_0_MAX100KHZ以外を使用する場合はスリープでオシレータを停止してはいけません。
-bool_t pc_setWake(uint8_t pcNo, PCDEBOUNCEMODE debounce, uint16_t count, bool_t bUseSecondPin, INTERRUPTIONEDGES mode) {
-    if (pcNo > 1) return FALSE;
-    if (mode != FALLING && mode != RISING) return FALSE;
-
-    dio_pinMode((pcNo == 0) ? (bUseSecondPin ? 4 : 1) : (bUseSecondPin ? 5 : 8), INPUT);
-
-    pcCallbackFunctions[pcNo] = NULL;
-
-    vAHI_PulseCounterSetLocation(pcNo, bUseSecondPin);
-
-    bAHI_PulseCounterConfigure(
-        pcNo,               //パルスカウンター0または1、結合する場合は0
-        (mode == FALLING),  //FALSE:RISING TRUE:FALLING
-        debounce,           //デバウンス
-                            //0: No debounce (maximum input frequency of 100kHz)
-                            //1: 2 samples (maximum input frequency of 3.7kHz)
-                            //2: 4 samples (maximum input frequency of 2.2kHz)
-                            //3: 8 samples (maximum input frequency of 1.2kHz)
-        0,                  //結合
-                            //E_AHI_PC_COMBINE_OFF (0 - Pulse counters not combined)
-                            //E_AHI_PC_COMBINE_ON0 (1 - Counters combined using PC0 input)
-                            //E_AHI_PC_COMBINE_ON1 (2 - Counters combined using PC1 input)
-        TRUE);              //bool_t bIntEnable);
-
-    bAHI_SetPulseCounterRef(pcNo, (uint32_t)(count - 1));
-    pc_clear(pcNo);
-    u32AHI_PulseCounterStatus();    //clear flag
-    pc_start(pcNo);
-
-    return TRUE;
-}
-
-
 //32ビットパルスカウンタを開始します。PC0とPC1を結合して使用するため、併用はできません。
 //入力ピンは事前にdio_pinMode()でINPUTまたはINPUT_PULLUPに設定しておいてください
 //pcNo=0/1, mode=RISING/FALLING, count=何回目でコールバック関数を呼び出すかを指定
-//pinNo=1,4,5,8のいずれか
-//カウンタは０にクリアされますが、pc32_start()を実行するまでパルスカウンタは開始されません。
-//func=NULLが設定可能です。カウンタが到達したかどうかは割り込みまたはポーリングでpc32_countReached()を調べることができます。
-//カウンタが到達後も継続してカウントされるため必要に応じてpc32_clear()を呼び出してください
-bool_t pc32_attachCallback(PCDEBOUNCEMODE debounce, uint32_t count, uint8_t pinNo, INTERRUPTIONEDGES mode, void (*func)()) {
+//pinNo=DIO1,4,5,8のいずれか
+//カウンタは０にクリアされます。
+bool_t pc32_enable(PCDEBOUNCEMODE debounce, uint32_t count, uint8_t pinNo, INTERRUPTIONEDGES mode, bool_t bStartNow) {
     if (mode != FALLING && mode != RISING) return FALSE;
 
     uint8_t combine;
@@ -1631,57 +1647,6 @@ bool_t pc32_attachCallback(PCDEBOUNCEMODE debounce, uint32_t count, uint8_t pinN
         case 8: combine = E_AHI_PC_COMBINE_ON1; bUseSecondPin = FALSE; break;
         default: return FALSE;
     }
-
-    pcCallbackFunctions[0] = func;
-
-    vAHI_PulseCounterSetLocation(0, bUseSecondPin);
-
-    bAHI_PulseCounterConfigure(
-        0,                  //パルスカウンター0または1、結合する場合は0
-        (mode == FALLING),  //FALSE:RISING TRUE:FALLING
-        debounce,           //デバウンス
-                            //0: No debounce (maximum input frequency of 100kHz)
-                            //1: 2 samples (maximum input frequency of 3.7kHz)
-                            //2: 4 samples (maximum input frequency of 2.2kHz)
-                            //3: 8 samples (maximum input frequency of 1.2kHz)
-        combine,            //結合
-                            //E_AHI_PC_COMBINE_OFF (0 - Pulse counters not combined)
-                            //E_AHI_PC_COMBINE_ON0 (1 - Counters combined using PC0 input)
-                            //E_AHI_PC_COMBINE_ON1 (2 - Counters combined using PC1 input)
-        func != NULL);      //bool_t bIntEnable);
-
-    bAHI_SetPulseCounterRef(0, count - 1);
-    pc32_clear();
-    return TRUE;
-}
-
-//32ビットパルスカウンタのカウント値を読み出します
-uint32_t pc32_read() {
-    uint32_t value;
-    if (!bAHI_Read32BitCounter(&value)) return 0xffffffff;
-    return value;
-}
-
-//パルスカウンタを起床条件に設定します
-//mode=RISING/FALLING, count=何回目で起床するかを指定
-//pinNo=1,4,5,8のいずれか
-//DIOはINPUTモードに設定されます。
-//カウンタはクリアされ、カウントを開始します。そのため、この関数はsleep()の直前に実行してください。
-//debounceにPC_DEBOUNCE_0_MAX100KHZ以外を使用する場合はスリープでオシレータを停止してはいけません。
-bool_t pc32_setWake(PCDEBOUNCEMODE debounce, uint32_t count, uint8_t pinNo, INTERRUPTIONEDGES mode) {
-    if (mode != FALLING && mode != RISING) return FALSE;
-
-    uint8_t combine;
-    bool_t bUseSecondPin;
-    switch (pinNo) {
-        case 1: combine = E_AHI_PC_COMBINE_ON0; bUseSecondPin = FALSE; break;
-        case 4: combine = E_AHI_PC_COMBINE_ON0; bUseSecondPin = TRUE; break;
-        case 5: combine = E_AHI_PC_COMBINE_ON1; bUseSecondPin = TRUE; break;
-        case 8: combine = E_AHI_PC_COMBINE_ON1; bUseSecondPin = FALSE; break;
-        default: return FALSE;
-    }
-
-    dio_pinMode(pinNo, INPUT);
 
     pcCallbackFunctions[0] = NULL;
 
@@ -1699,14 +1664,20 @@ bool_t pc32_setWake(PCDEBOUNCEMODE debounce, uint32_t count, uint8_t pinNo, INTE
                             //E_AHI_PC_COMBINE_OFF (0 - Pulse counters not combined)
                             //E_AHI_PC_COMBINE_ON0 (1 - Counters combined using PC0 input)
                             //E_AHI_PC_COMBINE_ON1 (2 - Counters combined using PC1 input)
-        TRUE);              //bool_t bIntEnable);
+        TRUE);              //bool_t bIntEnable); カウンタリセットに必要
 
     bAHI_SetPulseCounterRef(0, count - 1);
     pc32_clear();
-    u32AHI_PulseCounterStatus();    //clear flag
-    pc32_start();
+    if (bStartNow) pc32_start();
 
     return TRUE;
+}
+
+//32ビットパルスカウンタのカウント値を読み出します
+uint32_t pc32_read() {
+    uint32_t value;
+    if (!bAHI_Read32BitCounter(&value)) return 0xffffffff;
+    return value;
 }
 
 #endif //USE_PC
@@ -1714,8 +1685,12 @@ bool_t pc32_setWake(PCDEBOUNCEMODE debounce, uint32_t count, uint8_t pinNo, INTE
 
 
 /*
- * Ｉ２Ｃ
+ * I2Cマスター
  */
+
+#if defined(USE_I2C) || defined(USE_I2CS)
+static uint8_t i2cI2csInitFlag; //1:i2c initialized 2:i2cs initialized
+#endif
 
 #ifdef USE_I2C
 
@@ -1726,8 +1701,15 @@ I2CADDRESSINGMODE i2cAddressingMode;
 // = FALSE      DIO14 DIO15
 // = TRUE       DIO16 DIO17
 void i2c_enable(I2CCLOCKS clock, bool_t bUseSecondPin) {
+    if (i2cI2csInitFlag == 2) vAHI_SiSlaveDisable();
     vAHI_SiSetLocation(bUseSecondPin);
     vAHI_SiMasterConfigure(TRUE, FALSE, clock);
+    i2cI2csInitFlag = 1;
+}
+
+void i2c_disable() {
+    vAHI_SiMasterDisable();
+    if (i2cI2csInitFlag == 1) i2cI2csInitFlag = 0;
 }
 
 static bool_t i2cWait()
@@ -1930,9 +1912,73 @@ int16_t i2c_readByteOnly(uint16_t u16Address) {
 #endif //USE_I2C
 
 
+/*
+ * I2Cスレーブ
+ */
+
+#ifdef USE_I2CS
+
+static uint8_t i2csu8LastInt;
+static uint8_t i2csu8cmd;
+static bool_t i2csbNewCmd;
+
+static uint8_t i2csu8MWBufferSelect; //ダブルバッファのどっちに書き込むか
+static uint8_t i2csau8MWBuffer[2][I2CS_MW_BUFFER_SIZE]; //ダブルバッファにする必要あるかも
+static uint8_t i2csu8MWIndex[2];
+
+static const uint8_t *i2cspau8MRBuffer;  //by user
+static uint8_t i2csu8MRBufferSize; //by user
+static uint8_t i2csu8MRIndex;
+static bool_t i2csbDataNotReady;
+
+static int16_t i2csi16CmdForMRCallback;
+static void (*i2csMRCallbackFunction)(uint8_t);
+
+static int16_t i2csi16BufSelForMWCallback;
+static void (*i2csMWCallbackFunction)(uint8_t *, uint8_t);
+
+void i2cs_enable(uint8_t u16Address, bool_t b10BitAddress, bool_t bUseSecondPin, void (*prepareFunc)(uint8_t), void (*receivedFunc)(uint8_t*, uint8_t)) {
+    if (i2cI2csInitFlag == 1) vAHI_SiMasterDisable();
+
+    i2csMRCallbackFunction = prepareFunc;
+    i2csMWCallbackFunction = receivedFunc;
+
+    vAHI_SiSetLocation(bUseSecondPin);
+    vAHI_SiSlaveConfigure(
+        u16Address,     //uint16 u16SlaveAddress,
+        b10BitAddress,  //bool_t bExtendAddr,
+        TRUE,           //bool_t bPulseSuppressionEnable,
+        E_AHI_SIS_DATA_RR_MASK |
+        E_AHI_SIS_DATA_WA_MASK |
+        E_AHI_SIS_LAST_DATA_MASK |
+        E_AHI_SIS_ERROR_MASK, //uint8 u8InMaskEnable,
+        FALSE);         //bool_t bFlowCtrlMode);
+/*
+    0 E_AHI_SIS_DATA_RR_MASK    マスターに送るデータをバッファに書き込む必要あり。　Data buffer must be written with data to be read by SI master
+    1 E_AHI_SIS_DATA_RTKN_MASK  マスターに送る次のデータをバッファに書き込めるで。　Data taken from buffer by SI master - buffer free for next data
+    2 E_AHI_SIS_DATA_WA_MASK    データバッファにマスターからのデータが入ってるで。　Data buffer contains data from SI master to be read by SI slave
+    3 E_AHI_SIS_LAST_DATA_MASK  最後のデータが送信されたよ。　　　　　　　　　　　Last data transferred (end of burst)
+    4 E_AHI_SIS_ERROR_MASK      I2C protocol error
+*/
+    i2cI2csInitFlag = 2;
+}
+
+void i2cs_disable() {
+    vAHI_SiSlaveDisable()
+    if (i2cI2csInitFlag == 2) i2cI2csInitFlag = 0;
+}
+
+void i2cs_write(const uint8_t *pau8Data, uint8_t u8Length) {
+    i2cspau8MRBuffer = pau8Data;
+    i2csu8MRBufferSize = u8Length;
+}
+
+#endif //USE_I2CS
+
+
 
 /*
- * ＳＰＩ
+ * SPIマスター
  */
 
 #ifdef USE_SPI
@@ -2061,6 +2107,16 @@ uint8_t radio_txCount() {
     return u8NumRadioTx;
 }
 
+//無線送信完了、受信割り込みルーチンを設定する
+void radio_attachCallback(void (*txFunc)(uint8_t u8CbId, bool_t bSuccess), void (*rxFunc)(uint32_t u32SrcAddr, uint8_t u8CbId, uint8_t u8DataType, uint8_t *pu8Data, uint8_t u8Length, uint8_t u8Lqi)) {
+    radioTxCallbackFunction = txFunc;
+#ifdef USE_RADIO
+    radioRxCallbackFunction = rxFunc;
+#else
+    radioRxCallbackFunction = NULL;
+#endif
+}
+/*
 //無線送信完了割り込みルーチンを設定する
 void radio_attachTxCallback(void (*func)(uint8_t u8CbId, bool_t bSuccess)) {
     radioTxCallbackFunction = func;
@@ -2072,6 +2128,7 @@ void radio_attachRxCallback(void (*func)(uint32_t u32SrcAddr, uint8_t u8CbId, ui
     radioRxCallbackFunction = func;
 }
 #endif
+*/
 
 //無線で特定の相手に送信する
 //basicio_module.hでUSE_RADIOを宣言し、送信モジュールと同じAPP_ID,CHANNELに設定したモジュールかつ、関数の引数でu32DistAddrに指定したモジュールが受信できる
@@ -2122,11 +2179,12 @@ int16_t radio_write(uint32_t u32DestAddr, uint8_t *pu8Data, uint8_t u8Length, ui
 
 //radio_write()の簡易版
 //関数はエラーで-1、送信開始で8bitの送信Id(u8CbId)を返す。これは送信完了コールバックで送信データの識別に使用される
-int16_t radio_puts(uint32_t u32DestAddr, const char *pu8String)
+//u8DataType=データの簡易識別番号(0..7)
+int16_t radio_puts(uint32_t u32DestAddr, const char *pu8String, uint8_t u8DataType)
 {
     uint32_t len = (uint32_t)strlen(pu8String);
     if (len > 108) return -1;
-    return radio_write(u32DestAddr, (uint8_t *)pu8String, (uint8_t)len, 0);
+    return radio_write(u32DestAddr, (uint8_t *)pu8String, (uint8_t)len, u8DataType);
 }
 
 //radio_write()のprintf版
@@ -2215,16 +2273,16 @@ bool_t flash_erased(uint8_t sector, uint16_t offset, uint16_t u16Length)
     uint16_t n = u16Length >> 4;
     uint32_t buf[4];
     while (n-- > 0) {
+        if (offset >= 32768) {
+            offset -= 32768;
+            sector++;
+        }
         if (!flash_read(sector, offset, (uint8_t *)&buf[0], 16)) return FALSE;
         if (buf[0] != 0xffffffff) return FALSE;
         if (buf[1] != 0xffffffff) return FALSE;
         if (buf[2] != 0xffffffff) return FALSE;
         if (buf[3] != 0xffffffff) return FALSE;
         offset += 16;
-        if (offset >= 32768) {
-            offset -= 32768;
-            sector++;
-        }
     }
     return TRUE;
 }
@@ -2312,8 +2370,24 @@ void resetVars()
     pcCountStatus = 0;
 #endif
 
+#if defined(USE_I2C) || defined(USE_I2CS)
+    i2cI2csInitFlag = 0;
+#endif
+
 #ifdef USE_I2C
     i2cAddressingMode = I2C_ADDRESS_7BIT;
+#endif
+
+#ifdef USE_I2CS
+    i2csu8LastInt = 1;
+    i2csbNewCmd = FALSE;
+    i2csu8MWIndex[0] = 0;
+    i2csu8MWIndex[1] = 0;
+    i2csu8MRBufferSize = 0;
+    i2csMRCallbackFunction = NULL;
+    i2csi16CmdForMRCallback = -1;
+    i2csMWCallbackFunction = NULL;
+    i2csi16BufSelForMWCallback = -1;
 #endif
 
 #if defined(USE_RADIO) || defined(USE_RADIO_TXONLY)
@@ -2401,8 +2475,8 @@ void regMod() {
 
     //乱数生成アルゴリズムを登録。登録しない場合はハードウェア乱数を使用
     //ToCoNet_REG_MOD_MTRAND(); //MT法を使用する場合はライセンス表記が必要
-    //ToCoNet_REG_MOD_RAND_XOR_SHIFT();
     ToCoNet_vReg_mod_Rand_Xor_Shift();
+    //ToCoNet_REG_MOD_RAND_XOR_SHIFT();
 
 #if defined(USE_RADIO) || defined(USE_RADIO_TXONLY)
     //送受信キューを確保する(はず)
@@ -2597,38 +2671,56 @@ void cbToCoNet_vHwEvent(uint32_t u32DeviceId, uint32_t u32ItemBitmap)
     //割り込みに対する処理は通常ここで行う。
     switch (u32DeviceId) {
 
+#ifdef USE_I2S
+    case E_AHI_DEVICE_SI:   //I2Cマスタースレーブ共通
+        if (i2cI2csInitFlag == 2) {
+            //I2C スレーブ
+            if (i2csi16CmdForMRCallback != -1 && i2csMRCallbackFunction != NULL) {
+                //マスターが読み出すかもしれないデータを準備
+                (*i2csMRCallbackFunction)(i2csi16CmdForMRCallback);
+                i2csi16CmdForMRCallback = -1;
+            }
+            if (i2csi16BufSelForMWCallback != -1 && i2csMWCallbackFunction != NULL) {
+                //マスターが書き込んだデータを処理
+                (*i2csMWCallbackFunction)(i2csau8MWBuffer[i2csi16BufSelForMWCallback], i2csu8MWIndex[i2csi16BufSelForMWCallback]);
+                i2csi16BufSelForMWCallback = -1;
+            }
+        }
+        break;
+#endif
+
 #ifdef USE_TIMER
     case E_AHI_DEVICE_TIMER0:
         //タイマー0割り込み処理ルーチンの呼び出し
-        if (timerCallbackFunctions[0] != NULL) {
+        if ((sTimerApp[0].u8Mode == 1 || sTimerApp[0].u8Mode == 6) && timerCallbackFunctions[0] != NULL) {
             (*timerCallbackFunctions[0])();
         }
         break;
 
     case E_AHI_DEVICE_TIMER1:
         //タイマー1割り込み処理ルーチンの呼び出し
-        if (timerCallbackFunctions[1] != NULL) {
+        if (sTimerApp[1].u8Mode == 1 && timerCallbackFunctions[1] != NULL) {
             (*timerCallbackFunctions[1])();
         }
         break;
 
     case E_AHI_DEVICE_TIMER2:
         //タイマー2割り込み処理ルーチンの呼び出し
-        if (timerCallbackFunctions[2] != NULL) {
+        if (sTimerApp[2].u8Mode == 1 && timerCallbackFunctions[2] != NULL) {
             (*timerCallbackFunctions[2])();
         }
         break;
 
     case E_AHI_DEVICE_TIMER3:
         //タイマー3割り込み処理ルーチンの呼び出し
-        if (timerCallbackFunctions[3] != NULL) {
+        if (sTimerApp[3].u8Mode == 1 && timerCallbackFunctions[3] != NULL) {
             (*timerCallbackFunctions[3])();
         }
         break;
 
     case E_AHI_DEVICE_TIMER4:
         //タイマー4割り込み処理ルーチンの呼び出し
-        if (timerCallbackFunctions[4] != NULL) {
+        if (sTimerApp[4].u8Mode == 1 && timerCallbackFunctions[4] != NULL) {
             (*timerCallbackFunctions[4])();
         }
         break;
@@ -2644,7 +2736,7 @@ void cbToCoNet_vHwEvent(uint32_t u32DeviceId, uint32_t u32ItemBitmap)
                 for(pinNo = 0; pinNo < 20; pinNo++) {
                     if (bitmap & 1) { //DIO番号に対応するビットが1になっている
                         uint8_t i = dioCallbackFuncIndices[pinNo];
-                        if (i < MAX_DIO_INTERRUPT && dioCallbackFunctions[i] != NULL)
+                        if (i < MAX_DIO_INTERRUPT_FUNCS && dioCallbackFunctions[i] != NULL)
                             (*dioCallbackFunctions[i])(u32ItemBitmap);
                     }
                     bitmap >>= 1;
@@ -2704,8 +2796,8 @@ E_AHI_DIO0_INT (0)              Digital IO (DIO) events
                 _C {
                     if (!adcIsContinuous && --adcIntCountTillEnd == 0) {
                         vAHI_AdcDisableSampleBuffer();//完了時にこれをやっとかないと2回目が実行できない
-                        adcLastSource = 0;  //0xffのままだとadc_detachCallback()で余計な処理が入るのでクリア
-
+                        adcLastSource = 0;  //0xffのままだとadc_detach()で余計な処理が入るのでクリア
+#ifdef USE_TIMER
                         //タイマー停止
                         uint8_t i;
                         for(i=0; i<=4; i++) {
@@ -2714,6 +2806,7 @@ E_AHI_DIO0_INT (0)              Digital IO (DIO) events
                                 break;
                             }
                         }
+#endif
                     }
                     (*((void (*)())adcCallbackFunction))();//パラメータ無し
                 }
@@ -2747,11 +2840,11 @@ uint8_t cbToCoNet_u8HwInt(uint32_t u32DeviceId, uint32_t u32ItemBitmap)
 
 #ifdef USE_TIMER
     case E_AHI_DEVICE_TIMER0:
-        if (sTimerApp[0].u8Mode == 4) { //Micro counter    
+        if (sTimerApp[0].u8Mode == 4) {         //Micro counter    
             sTimerApp[0].u16HiMicroSeconds++;
             return TRUE;
         }
-        else if (sTimerApp[0].u8Mode == 5) { //Capture
+        else if (sTimerApp[0].u8Mode == 5) {    //Capture
             if (bTimer0FirstCap) {
                 //最初の1つはダミー読み込み
                 vAHI_TimerReadCaptureFreeRunning(0, pu16Timer0CapBuf, pu16Timer0CapBuf + 1);
@@ -2766,45 +2859,138 @@ uint8_t cbToCoNet_u8HwInt(uint32_t u32DeviceId, uint32_t u32ItemBitmap)
                     //パルスは外部入力なのでtimer_stop()ではダメ。元から止める
                     vAHI_TimerDisable(0);
                 }
-                return TRUE;
             }
+            return TRUE;
         }
         break;
 
     case E_AHI_DEVICE_TIMER1:
-        if (sTimerApp[1].u8Mode == 4) { //Micro counter    
+        if (sTimerApp[1].u8Mode == 4) {         //Micro counter    
             sTimerApp[1].u16HiMicroSeconds++;
             return TRUE;
         }
         break;
 
     case E_AHI_DEVICE_TIMER2:
-        if (sTimerApp[2].u8Mode == 4) { //Micro counter    
+        if (sTimerApp[2].u8Mode == 4) {         //Micro counter    
             sTimerApp[2].u16HiMicroSeconds++;
             return TRUE;
         }
         break;
 
     case E_AHI_DEVICE_TIMER3:
-        if (sTimerApp[3].u8Mode == 4) { //Micro counter    
+        if (sTimerApp[3].u8Mode == 4) {         //Micro counter    
             sTimerApp[3].u16HiMicroSeconds++;
             return TRUE;
         }
         break;
 
     case E_AHI_DEVICE_TIMER4:
-        if (sTimerApp[4].u8Mode == 4) { //Micro counter    
+        if (sTimerApp[4].u8Mode == 4) {         //Micro counter    
             sTimerApp[4].u16HiMicroSeconds++;
             return TRUE;
         }
         break;
 #endif
 
-    case E_AHI_DEVICE_TICK_TIMER:
+#ifdef USE_I2CS
+    case E_AHI_DEVICE_SI: //I2Cマスタースレーブ共通
+        if (i2cI2csInitFlag == 2 && u32ItemBitmap & 0x1d) {
+            //I2C スレーブ割り込み
+
+            //書き込みパターンの割り込み 4,4,...4,8
+            //読み込みパターンの割り込み 4,8,1,...1
+
+            bool_t bDone = TRUE;
+
+            if (u32ItemBitmap & 1) {//E_AHI_SIS_DATA_RR_MASK
+                if (i2csu8LastInt == 8) {
+                    //マスターの読み出し開始
+                    i2csu8MRIndex = 0;
+                    i2csbDataNotReady = (i2csu8MRBufferSize == 0);
+                }
+                if (i2csbDataNotReady) {
+                    //準備していない
+                    vAHI_SiSlaveWriteData8(I2CS_MR_DATA_NOT_READY);
+                } else if (i2csu8MRIndex < i2csu8MRBufferSize) {
+                    //データを渡してポインタを進める
+                    vAHI_SiSlaveWriteData8(*(i2cspau8MRBuffer + i2csu8MRIndex));
+                    i2csu8MRIndex++;
+                } else {
+                    //範囲外
+                    vAHI_SiSlaveWriteData8(I2CS_MR_OUT_OF_RANGE);
+                }
+                i2csu8LastInt = 1;
+            }
+            else if (u32ItemBitmap & 4) {//E_AHI_SIS_DATA_WA_MASK
+                uint8_t c = u8AHI_SiSlaveReadData8();
+                if (i2csu8LastInt == 1 || i2csu8LastInt == 8 || i2csu8LastInt == 16) {
+                    i2csu8cmd = c;
+                    i2csbNewCmd = TRUE;
+
+                    //遅延割り込みでデータ準備コールバックを呼びたいので
+                    //コマンド番号をセット
+                    i2csi16CmdForMRCallback = i2csu8cmd;
+                    bDone = FALSE;
+
+                } else if (i2csu8LastInt == 4) {
+                    if (i2csbNewCmd) {
+                        i2csbNewCmd = FALSE;
+                        //データ保存開始
+                        i2csu8MWBufferSelect = (i2csu8MWBufferSelect + 1) & 1; //次のバッファ
+                        i2csu8MWIndex[i2csu8MWBufferSelect] = 0;
+                        if (i2csu8MWIndex[i2csu8MWBufferSelect] < I2CS_MW_BUFFER_SIZE) i2csau8MWBuffer[i2csu8MWBufferSelect][i2csu8MWIndex[i2csu8MWBufferSelect]++] = i2csu8cmd;
+                    }
+                    //データ保存
+                    if (i2csu8MWIndex[i2csu8MWBufferSelect] < I2CS_MW_BUFFER_SIZE) i2csau8MWBuffer[i2csu8MWBufferSelect][i2csu8MWIndex[i2csu8MWBufferSelect]++] = c;
+                }
+                i2csu8LastInt = 4;
+                i2csbDataNotReady = FALSE;
+            }
+            else if (u32ItemBitmap & 8) {//E_AHI_SIS_LAST_DATA_MASK
+                if (i2csu8LastInt == 4 && i2csu8MWIndex[i2csu8MWBufferSelect] > 0) {
+                    //遅延割り込みで書き込まれたデータをユーザーに渡したいので、
+                    //ダブルバッファインデックスをセット
+                    i2csi16BufSelForMWCallback = i2csu8MWBufferSelect;
+                    bDone = FALSE;
+                }
+                i2csu8LastInt = 8;
+            }
+            else if (u32ItemBitmap & 16) {//E_AHI_SIS_ERROR_MASK
+                i2csu8LastInt = 16;
+            }
+            return bDone;
+        }
+        break;
+#endif
+
+    case E_AHI_DEVICE_TICK_TIMER:               //For millis()
         //u32AHI_TickTimerRead()は1秒毎にリセットされてるみたいなので、ここで独自にカウント
         millisValue += millisValueTick;
 
         //E_AHI_DEVICE_TICK_TIMERは例外的にTRUEを返してはいけない (固まる)
+        break;
+
+    case E_AHI_DEVICE_SYSCTRL:
+#ifdef USE_PC
+        if ((u32ItemBitmap & E_AHI_SYSCTRL_PC0_MASK) != 0) {
+            //パルスカウンタ0割り込み
+            pc_clear(0);                        //パルスカウンタは延々とカウントアップするのでクリアする
+            pcCountStatus |= PC_INT_BITMAP_0;   //フラグを立てる(割り込み有効にするとu32AHI_PulseCounterStatus()でフラグが立たなくなるため)
+
+            if (pcCallbackFunctions[0] == NULL) return TRUE;    //遅延割り込みで呼び出すコールバックが無いので、ここで終了
+        }
+        if ((u32ItemBitmap & E_AHI_SYSCTRL_PC1_MASK) != 0) {
+            //パルスカウンタ1割り込み
+            pc_clear(1);                        //パルスカウンタは延々とカウントアップするのでクリアする
+            pcCountStatus |= PC_INT_BITMAP_1;   //フラグを立てる(割り込み有効にするとu32AHI_PulseCounterStatus()でフラグが立たなくなるため)
+
+            if (pcCallbackFunctions[1] == NULL) return TRUE;    //遅延割り込みで呼び出すコールバックが無いので、ここで終了
+        }
+
+        //遅延割り込みでコールバック関数を呼び出すのでTRUEを返しません
+#endif
+        break;
     }
 
 	return FALSE;//FALSEによりcbToCoNet_vHwEvent()が呼ばれる
