@@ -1,15 +1,23 @@
 /*
  * basicio.h
- * バージョン 1.00
- * 2019/10/07 by T.Maeoka
+ * バージョン 2.0
+ * 2019/---/--- by T.Maeoka
  */
 
 #ifndef __BASICIO_H
 #define __BASICIO_H
 
+#define BASICIO_MAJOR_VER   2
+#define BASICIO_MINOR_VER   0
+
+
 #include "AppHardwareApi.h"
 #include "utils.h"
 #include "ToCoNet.h"
+#include "string.h"
+
+#define ToCoNet_USE_MOD_RAND_XOR_SHIFT
+#include "ToCoNet_mod_prototype.h"
 
 #include "basicio_module.h"
 
@@ -17,26 +25,14 @@
 #include "serial.h"
 #endif
 
-#if defined(USE_RADIO) || defined(USE_RADIO_TXONLY)
-#include "ToCoNet_mod_prototype.h"
-#endif
-
-//#ifdef USE_EEPROM
-//#include "eeprom_6x.h"
-//#endif
-
-//#ifdef USE_FLASH
-//#include "ccitt8.h"
-//#endif
-
 
 /*
  * 条件コンパイル
  */
 
-//文字列バッファ
-#if (defined(USE_RADIO) || defined(USE_RADIO_TXONLY) || defined(USE_SERIAL) || defined(USE_SERIAL1)) && !defined(USE_SBUTIL)
-#define USE_SBUTIL
+//__printf()関数
+#if defined(USE_RADIO) || defined(USE_SERIAL) || defined(USE_SERIAL1) || defined(USE_SBUTIL)
+#define USE_PRINTF
 #endif
 
 //シリアル0のフロー制御にTimerを用いる
@@ -45,14 +41,21 @@
 #endif
 
 //ＡＤＣ，コンパレータ，パルスカウンタでDIOを使用
-#if (defined(USE_ADC) || defined(USE_COMP) || defined(USE_PC)) && !defined(USE_DIO)
+#if (defined(USE_ADC) || defined(USE_COMP) || defined(USE_PC) || defined(USE_LEDUTIL)) && !defined(USE_DIO)
 #define USE_DIO
 #endif
 
-#ifdef USE_SBUTIL
+/*
+#ifdef USE_PRINTF
 #include "sprintf.h"
-#endif
 
+//__printf()
+#include <stddef.h>
+#include <stdint.h>
+#include <string.h>
+#include <stdarg.h>
+#endif
+*/
 
 //TWELITE種類の判別
 #if JN5164 == 5164      //TWELITE BLUE
@@ -159,6 +162,16 @@
 #define SB_BUFFER_SIZE 128
 #endif
 
+//led_define()で登録できるLEDの最大数
+#ifndef MAX_LED
+#define MAX_LED     2
+#endif
+
+//led_setPattern()で同時に付加できるパターンの最大数
+#ifndef MAX_LED_PATTERN
+#define MAX_LED_PATTERN 4
+#endif
+
 //TICK TIMER 1秒間の回数
 #ifndef TICK_COUNT
 #define TICK_COUNT  250
@@ -183,8 +196,6 @@ typedef enum {
  */
 
 
-//ミリ秒を計測するカウントアップタイマー。デフォルト精度は4ms。ユーザーが書き込んでもOK
-//割り込みでなくコールバックでカウントしてるので、loop()を一旦抜けないとカウントアップしない
 extern uint32_t millis();
 
 
@@ -195,6 +206,17 @@ extern uint32_t millis();
 //モジュールを識別する番号として用いる
 #define getModuleAddress()          ToCoNet_u32GetSerial()
 
+extern bool_t sleepCalibratedTimer(uint64_t milliSeconds, bool_t bRAMPower, uint32_t calibValue);
+extern uint32_t wakeTimer_getCalibrationValue();
+
+//ウェイクタイマーが動いているか返します
+//タイマー起床後のsetup()内でのみTRUEを返します
+#define wakeTimer_isRunning()       (u8AHI_WakeTimerStatus() & E_AHI_WAKE_TIMER_MASK_0 ? TRUE : FALSE)
+
+//ウェイクタイマーの現在のカウント値を返します。uint16_t 型であることに注意してください
+//ウェイクタイマーは約32KHzのカウントダウンタイマーで、0を過ぎると0x1FFFFFFFFFFになります。
+#define wakeTimer_readCount()       u64AHI_WakeTimerReadLarge(E_AHI_WAKE_TIMER_0)
+
 extern bool_t sleepTimer(uint64_t milliSeconds, bool_t bRAMPower);
 
 #define sleep(b32kOsc, bRAMPower)   vAHI_Sleep(b32kOsc ? \
@@ -202,7 +224,6 @@ extern bool_t sleepTimer(uint64_t milliSeconds, bool_t bRAMPower);
                     (bRAMPower ? E_AHI_SLEEP_OSCOFF_RAMON : E_AHI_SLEEP_OSCOFF_RAMOFF))
 
 #define deepSleep()                 vAHI_Sleep(E_AHI_SLEEP_DEEP)
-
 
 //setup()で使う
 #define dioWake(ws)     ((ws & 0xfffff) ? TRUE : FALSE)
@@ -214,12 +235,11 @@ extern bool_t sleepTimer(uint64_t milliSeconds, bool_t bRAMPower);
 
 
 #ifdef USE_SBUTIL
-#define sb_clear()              SPRINTF_vRewind()
-#define sb_putc(c)              (SPRINTF_Stream->bPutChar(SPRINTF_Stream->u8Device, c))
-extern void sb_puts(const char *str);
-#define sb_printf(...)          vfPrintf(SPRINTF_Stream, LB __VA_ARGS__)
-extern void sb_removeCrLf();
-#define sb_getBuffer()          SPRINTF_pu8GetBuff()
+extern void sb_clear();
+extern bool_t sb_putc(char c);
+extern bool_t sb_puts(const char *str);
+extern bool_t sb_printf(const char *fmt, ...);
+extern const char *sb_getBuffer();
 #endif
 
 #ifdef USE_PBUTIL
@@ -228,6 +248,13 @@ extern bool_t pb_pressed(uint8_t pinNo);
 extern bool_t pb_released(uint8_t pinNo);
 extern bool_t pb_currentState(uint8_t pinNo);
 extern void pb_reset();
+#endif
+
+#ifdef USE_LEDUTIL
+extern bool_t led_define(uint8_t pinNo, bool_t bHighToOn, bool_t bDefaultIsOn);
+extern uint8_t led_setPattern(uint8_t pinNo, uint16_t u16OnTime, uint16_t u16OffTime, bool_t bStartFromOn, int16_t i16Cycle, uint8_t u8Priority, void (*callbackFunction)(uint8_t u8Id));
+extern void led_clearPattern(uint8_t u8Id);
+extern void led_clearDioPattern(uint8_t pinNo);
 #endif
 
 typedef enum {
@@ -393,7 +420,8 @@ extern uint16_t serial_getRxCount();
 extern int16_t serial_getc();
 extern int16_t serial_readUntil(uint8_t u8Terminate, uint8_t *pu8Buffer, uint16_t u16Length);
 //extern bool_t serial_printf(const char* format, va_list args);
-#define serial_printf(...)   do{ SPRINTF_vRewind(); vfPrintf(SPRINTF_Stream, LB __VA_ARGS__); serialx_write(E_AHI_UART_0, (uint8_t *)SPRINTF_pu8GetBuff(), (uint16_t)strlen((const char *)SPRINTF_pu8GetBuff())); }while(0)
+//#define serial_printf(...)   do{ SPRINTF_vRewind(); vfPrintf(SPRINTF_Stream, LB __VA_ARGS__); serialx_write(E_AHI_UART_0, (uint8_t *)SPRINTF_pu8GetBuff(), (uint16_t)strlen((const char *)SPRINTF_pu8GetBuff())); }while(0)
+extern bool_t serial_printf(const char *fmt, ...);
 
 //シリアル0を初期化する
 //ハードウェアフロー制御(RTS,CTS)を使用する場合は SERIAL_HW_FLOW_CONTROL をbasicio_module.h内で宣言する
@@ -412,7 +440,7 @@ extern int16_t serial_readUntil(uint8_t u8Terminate, uint8_t *pu8Buffer, uint16_
 //#define serial_puts(pau8String)             serialx_puts(E_AHI_UART_0, (uint8_t *)pau8String)
 
 //シリアル0に文字列を書き出す。バッファがいっぱいの場合は書き出さずにFALSEを返す
-#define serial_puts(pau8String)             serialx_write(E_AHI_UART_0, (uint8_t *)pau8String, (uint16_t)strlen(pau8String))
+#define serial_puts(pau8String)             serialx_write(E_AHI_UART_0, (uint8_t *)pau8String, (uint16_t)strlen((const char *)pau8String))
 
 
 //シリアル0の送信バッファのデータ数を返す
@@ -440,7 +468,8 @@ extern bool_t serial1_dataLost();
 extern int16_t serial1_getc();
 extern int16_t serial1_readUntil(uint8_t u8Terminate, uint8_t *pu8Buffer, uint16_t u16Length);
 //extern bool_t serial1_printf(const char* format, va_list args);
-#define serial1_printf(...)   do{ SPRINTF_vRewind(); vfPrintf(SPRINTF_Stream, LB __VA_ARGS__); serialx_write(E_AHI_UART_1, (uint8_t *)SPRINTF_pu8GetBuff(), (uint16_t)strlen((const char *)SPRINTF_pu8GetBuff())); }while(0)
+//#define serial1_printf(...)   do{ SPRINTF_vRewind(); vfPrintf(SPRINTF_Stream, LB __VA_ARGS__); serialx_write(E_AHI_UART_1, (uint8_t *)SPRINTF_pu8GetBuff(), (uint16_t)strlen((const char *)SPRINTF_pu8GetBuff())); }while(0)
+extern bool_t serial1_printf(const char *fmt, ...);
 
 //シリアル1を初期化する
 //bUseSecondPin RXD   TXD
@@ -765,12 +794,21 @@ extern void spi_writeByte(int8_t slaveNo, uint8_t u8Command, uint8_t u8Data);
  * 無線通信
  */
 
-#if defined(USE_RADIO) || defined(USE_RADIO_TXONLY)
+#ifdef USE_RADIO
 //#include "sprintf.h"
 
 #define RADIO_ADDR_BROADCAST    TOCONET_MAC_ADDR_BROADCAST
 
-extern void radio_attachCallback(void (*txFunc)(uint8_t u8CbId, bool_t bSuccess), void (*rxFunc)(uint32_t u32SrcAddr, uint8_t u8CbId, uint8_t u8DataType, uint8_t *pu8Data, uint8_t u8Length, uint8_t u8Lqi));
+typedef enum {
+    RADIO_MODE_OFF,      //無線通信を使用しない
+    RADIO_MODE_TXONLY,   //送信のみ行う
+    RADIO_MODE_TXRX      //送受信を行う
+} RADIOMODE;
+
+extern bool_t radio_setupInit(RADIOMODE mode, uint32_t appid, uint8_t channel, uint8_t txPower);
+extern bool_t radio_setRetry(uint8_t retryCount, uint16_t retryDuration);
+
+extern void radio_attachCallback(void (*txFunc)(uint8_t u8CbId, bool_t bSuccess), void (*rxFunc)(uint32_t u32SrcAddr, bool_t bBroadcast, uint8_t u8CbId, uint8_t u8DataType, uint8_t *pu8Data, uint8_t u8Length, uint8_t u8Lqi));
 #define radio_detach()          radio_attachCallback(NULL, NULL)
 
 /*
@@ -783,13 +821,15 @@ extern void radio_attachRxCallback(void (*func)(uint32_t u32SrcAddr, uint8_t u8C
 #define radio_detachRxCallback()  radio_attachRxCallback(NULL)
 */
 
-extern int16_t radio_write(uint32_t u32DestAddr, uint8_t *pu8Data, uint8_t u8Length, uint8_t u8DataType);
-extern int16_t radio_puts(uint32_t u32DestAddr, const char *pu8String, uint8_t u8DataType);
+extern int16_t radio_write(uint32_t u32DestAddr, uint8_t u8DataType, uint8_t *pu8Data, uint8_t u8Length);
+extern int16_t radio_puts(uint32_t u32DestAddr, uint8_t u8DataType, const char *pu8String);
+
 //extern bool_t radio_printf(uint32_t u32DestAddr, const char* format, va_list args);
+//#define radio_printf(u32DestAddr,u8DataType, ...)     do{ SPRINTF_vRewind(); vfPrintf(SPRINTF_Stream, LB __VA_ARGS__); radio_puts(u32DestAddr, (const char *)SPRINTF_pu8GetBuff(), u8DataType); }while(0)
+extern bool_t radio_printf(uint32_t u32DestAddr, uint8_t u8DataType, const char* fmt, ...);
+extern uint8_t radio_txCount();
 
-#define radio_printf(u32DestAddr,u8DataType, ...)     do{ SPRINTF_vRewind(); vfPrintf(SPRINTF_Stream, LB __VA_ARGS__); radio_puts(u32DestAddr, SPRINTF_pu8GetBuff(), u8DataType); }while(0)
-
-#endif //USE_RADIO || USE_RADIO_TXONLY
+#endif //USE_RADIO
  
 
 /*

@@ -20,12 +20,11 @@
 //#define USE_I2CS          //I2C(スレーブ)通信を使用する
 //#define USE_SPI           //SPI(マスター)通信を使用する
 //#define USE_RADIO         //無線通信を使用する(送受信)
-//#define USE_RADIO_TXONLY  //無線通信を使用する(送信のみ)
 //#define USE_EEPROM        //EEPROMを使用する
 //#define USE_FLASH         //フラッシュメモリを使用する
 //#define USE_PBUTIL        //プッシュボタン補助関数 pb_XXX を使用する
 //#define USE_SBUTIL        //文字列バッファ補助関数 sb_XXX を使用する
-
+//#define USE_LEDUTIL       //LED補助関数 led_XXX を使用する
 
 
 
@@ -35,7 +34,13 @@
 
 
 /* 文字列バッファ補助関数 オプション */
-//#define SB_BUFFER_SIZE  128       //sb_printf()等で使用するバッファサイズを指定します 32/64/128/256/512/1024のいずれかです。（規定値: 128）
+//#define SB_BUFFER_SIZE  128       //sb_XXX()で使用するバッファサイズを指定します。(規定値: 128）
+                                    //終端'\0'のため、実際には SB_BUFFER_SIZE+1 のバッファが確保されます
+
+
+/* LED補助関数 オプション */
+//#define MAX_LED         2         //使用するLEDの最大数を指定します。
+//#define MAX_LED_PATTERN 4         //LEDに付加する効果の最大数を指定します。使用するLEDが増えるとその分増やすこと。
 
 
 /* デジタルIO オプション */
@@ -59,15 +64,7 @@
 //#define I2CS_MR_OUT_OF_RANGE  255 //マスターの読み込みが行われるとき、準備したデータの範囲外を参照した場合に返す値。0～255(規定値:255)
 
 
-/* 無線通信 設定（USE_RADIO宣言時は必須）*/
-#define APP_ID      0x67720103      //無線通信するうえで、そのグループは同じ値APP_IDを設定すること
-                                    //有効なAPP_IDの範囲。0xHHHHLLLLの場合、HHHH,LLL共に0x0001～0x7FFF
-#define CHANNEL     18              //無線通信するうえで、そのグループは同じ値CHANNELを設定すること
-
 /* 無線通信 オプション */
-//#define TX_POWER    3             //無線送信出力の設定。 3:最大 2: -11.5db 1: -23db 0:-34.5db となる (規定値:3)
-//#define TX_RETRY    2             //相手にデータが届かない場合、リトライ送信する回数。0～7 (規定値:2)
-                                    //ブロードキャスト送信の場合は常に(TX_RETRY+1)回の送信が実行される
 
 //送信キューのサイズを決定します。SMALLは送信用で 3ヶ、MIDは6ヶ、BIGは20ヶのキューを確保します。
 //パケット分割を行うような一度に多くのパケットを連続的に送信する場合はBIGを指定します。
@@ -81,14 +78,13 @@
 
 /*
  * 通常稼働時のCPUクロック。3:32MHz, 2:16Mhz, 1:8Mhz, 0:4Mhz を指定する(規定値は 2:16MHz)
- * 16MHz以外のクロックを設定すると通信やタイマー、PWM、millisなどすべてのタイミングが変わってくると思われます
  * ※basicioでは変更を考慮していません
  */
 //#define CPU_CLOCK   2   //=16[MHz]
 
 /*
  * loop()のEVENT_TICK_TIMERイベント周期を決定
- * 規定値は250=4ms, 1000を割り切れる値にすること。事実上 1000, 500, 250, 200, 100 のみ
+ * 規定値は250=4ms, 1000を割り切れる値にすること。事実上 1ms:1000, 2ms:500, 4ms:250, 5ms:200, 10ms:100 のみ
  */
-//#define	TICK_COUNT  250 // 1000/250=4[ms]
+//#define	TICK_COUNT  250 // 4ms
 

@@ -45,9 +45,9 @@ include ../Version.mk
 #   ../Source
 #   ../Common/Source
 #
-APPSRC += $(TARGET_DIR).c
+#APPSRC += $(TARGET_DIR).c
 APPSRC += basicio.c
-#APPSRC += bme280_i2c.c
+APPSRC += main.c
 
 ### Target type
 # アプリケーション(.bin)をビルドするか、ライブラリ(.a)にするか指定します。

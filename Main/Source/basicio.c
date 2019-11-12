@@ -1,19 +1,49 @@
 /*
  * basicio.h
- * バージョン 1.00
- * 2019/10/07 by T.Maeoka
+ * バージョン 1.00 ????
+ * ???? 2019/10/07 by T.Maeoka
+ * 
+ * 
+ * LED補助関数を追加
+ * 　定義　 USE_LEDUTIL
+ * 　関数名 led_XXX()
+ * 
  */
 
 #include "basicio.h"
-#include "string.h"
+
+#ifdef USE_PRINTF
+
+//#include <stddef.h>
+//#include <stdint.h>
+//#include <string.h>
+#include <stdarg.h>
+
+static bool_t __printf(bool_t (*__putc)(char), const char *fmt, va_list ap);
+
+//__printf()用書き込み補助関数
+static char *__printf_putc_ptr;
+static uint16_t __printf_putc_count;
+static uint16_t __printf_putc_size;
+
+#define __printf_putc_init(p,l) if(1) { __printf_putc_ptr = p; __printf_putc_count = 0; __printf_putc_size = l; }
+
+static bool_t __printf_putc(char c) {
+    if (__printf_putc_count == __printf_putc_size) return FALSE;
+    *__printf_putc_ptr++ = c;
+    __printf_putc_count++;
+    return TRUE;
+}
+#endif //USE_PRINTF
+
 
 static volatile uint32_t millisValue;
-static volatile uint32_t millisValueTick;
+static uint32_t millisValueTick;
 
+//ミリ秒を計測するカウントアップタイマー。カウントアップ値はTICK_TIMERによる。デフォルト4ms。
 uint32_t millis() {
     return millisValue;
 }
-
 
 
 #ifdef USE_PBUTIL
@@ -102,31 +132,335 @@ static void pb_update() {
 #endif
 
 #ifdef USE_SBUTIL
+//v2.0で刷新
 
-//文字列バッファに文字列を書き出す
-void sb_puts(const char *str) {
-    while (*str != '\0')
-        SPRINTF_Stream->bPutChar(SPRINTF_Stream->u8Device, *str++);
+static char __sb_buf[SB_BUFFER_SIZE + 1];
+
+//書き込み補助関数
+static char *__sb_ptr;
+static uint16_t __sb_count;
+
+void sb_clear() {
+    __sb_ptr = __sb_buf;
+    __sb_count = 0;
 }
 
-//文字列バッファから改行コードを取り除く
-void sb_removeCrLf() {
-    char *p = (char *)sb_getBuffer();
-    uint8_t o = 0;
-    do {
-        if (*p == '\r' || *p == '\n') {
-            o++;
-        } else if (o != 0) {
-            *(p - o) = *p;
-        }
-    } while (*p++ != '\0');
+bool_t sb_putc(char c) {
+    if (__sb_count == SB_BUFFER_SIZE) return FALSE;
+    *__sb_ptr++ = c;
+    __sb_count++;
+    return TRUE;
 }
 
+bool_t sb_puts(const char *str) {
+    uint16_t l = (uint16_t)strlen(str);
+    if (l > SB_BUFFER_SIZE - __sb_count) return FALSE;
+    memcpy(__sb_ptr, str, l);
+    __sb_ptr += l;
+    __sb_count += l;
+    return TRUE;
+}
+
+bool_t sb_printf(const char *fmt, ...) {
+    //パラメータを取得
+    va_list ap;
+    va_start(ap, fmt);
+
+    //退避
+    char *p = __sb_ptr;
+    uint16_t c = __sb_count;
+
+    //bufにprintf
+    if (!__printf(sb_putc, fmt, ap)) {
+        //バッファオーバーフロー
+        va_end(ap);
+
+        //復帰
+        __sb_ptr = p;
+        __sb_count = c;
+        return FALSE;
+    }
+    va_end(ap);
+    return TRUE;
+}
+
+const char *sb_getBuffer() {
+    *(__sb_ptr + 1) = '\0';
+    return __sb_buf;
+}
 #endif
+
+
+#ifdef USE_LEDUTIL
+
+typedef struct {
+    uint8_t u8Led;          //LED DIO番号 (255:無効)
+    bool_t bHighToOn;       //HIGHでLED点灯か?
+    bool_t bDefaultIsOn;    //デフォルトでLED点灯か?
+} LEDINFO;
+
+typedef struct {
+    uint8_t u8Id;           //ID (0:無効)
+    uint8_t u8Led;          //LED DIO番号
+    uint8_t u8Priority;     //Highest:255 Lowest:0
+    bool_t bState;          //現在の状態
+    uint16_t u16OnCount;    //ON時間 TICK_TIMER x count
+    uint16_t u16OffCount;   //OFF時間 TICK_TIMER x count
+    uint16_t u16Count;      //current counter (count up)
+    int16_t i16Cycle;       //実行回数(ON,OFFを各1回として数える、count down)、-1:無制限
+    void (*callbackFunction)(uint8_t);  //コールバック関数のポインタ
+} LEDPATTERN;
+
+LEDINFO ledInformations[MAX_LED];
+uint8_t u8LedIdGen;
+LEDPATTERN ledPatterns[MAX_LED_PATTERN];
+
+//指定したDIOピンをLEDとして登録します。
+//DIOは事前にOUTPUTモードに設定しておいてください。
+//pinNo DIOピン0-19
+//bHighToOn HIGHを出力したときにLEDは点灯する回路か?
+//bDefaultIsOn デフォルトでLEDは点灯させるか?
+//返り値 成功時にTRUEを返します
+bool_t led_define(uint8_t pinNo, bool_t bHighToOn, bool_t bDefaultIsOn) {
+    if (pinNo > 19) return FALSE;
+
+    uint8_t i;
+    LEDINFO *p = &ledInformations[0];
+    for (i=0; i<MAX_LED; i++) {
+        if (p->u8Led == 255) {
+            p->u8Led = pinNo;
+            p->bHighToOn = bHighToOn;
+            p->bDefaultIsOn = bDefaultIsOn;
+            return TRUE;
+        }
+        p++;
+    }
+    return FALSE;
+}
+
+//使われていないIDを返す。初期値はu8Idで重複していればインクリメントしていく
+static uint8_t led_getUniqueId(uint8_t u8Id) {
+    uint8_t i;
+    while(1) {
+        if (u8Id == 0) u8Id = 1;
+        LEDPATTERN *p = &ledPatterns[0];
+        for (i=0; i<MAX_LED_PATTERN; i++) {
+            if (p->u8Id == u8Id) break;
+            p++;
+        }
+        if (i == MAX_LED_PATTERN) return u8Id;
+        u8Id++;
+    }
+}
+
+//LEDに点灯パターンを設定します。
+//pinNo DIOピン番号 0-19。led_define()で定義されていること
+//u16OnTime     点灯時間(ミリ秒)
+//u16OffTime    消灯時間(ミリ秒)
+//bStartFromOn  点灯から開始するか?
+//i16Cycle      点灯、消灯それぞれ1回と数えて何回実行するか。-1で無限実行
+//u8Priority    優先順位 0:最低 255:最高。同じ優先順位の場合は出力が合成されます
+//callbackFunction サイクルが完了したときに呼び出すコールバック関数。使用しない場合はNULLを指定します
+//返り値 設定された場合は1-255のIDが返されます。失敗で0
+uint8_t led_setPattern(uint8_t pinNo, uint16_t u16OnTime, uint16_t u16OffTime,
+                        bool_t bStartFromOn, int16_t i16Cycle, uint8_t u8Priority, void (*callbackFunction)(uint8_t u8Id)) {
+    if (pinNo > 19) return 0;//簡易チェック
+
+    uint8_t i;
+    LEDPATTERN *p = &ledPatterns[0];
+    for (i=0; i<MAX_LED_PATTERN; i++) {
+        if (p->u8Id == 0) {
+
+            p->u8Id = led_getUniqueId(u8LedIdGen);
+            u8LedIdGen = p->u8Id + 1;
+            if (u8LedIdGen == 0) u8LedIdGen = 1;
+
+            p->u8Led = pinNo;               //LED DIO番号
+            p->u8Priority = u8Priority;     //Highest:255 Lowest:0
+            p->bState = bStartFromOn;       //現在の状態
+            p->u16Count = 0;                //current counter (count up)
+            p->i16Cycle = i16Cycle;         //実行回数(ON,OFFを各1回として数える、count down)、-1:無制限
+            p->callbackFunction = callbackFunction; //コールバック関数のポインタ
+
+            p->u16OnCount = u16OnTime / millisValueTick;    //ON時間 TICK_TIMER x count
+            if (u16OnTime != 0 && p->u16OnCount == 0) p->u16OnCount = 1;
+
+            p->u16OffCount = u16OffTime / millisValueTick;  //OFF時間 TICK_TIMER x count
+            if (u16OffTime != 0 && p->u16OffCount == 0) p->u16OffCount = 1;
+            return p->u8Id;
+        }
+        p++;
+    }
+    return 0;
+}
+
+//指定したIDのパターンを削除する
+//u8Id led_setPattern()で取得したID
+//この場合コールバック関数は呼ばれません
+void led_clearPattern(uint8_t u8Id) {
+    if (u8Id == 0) return;
+    uint8_t i;
+    LEDPATTERN *p = &ledPatterns[0];
+    for (i=0; i<MAX_LED_PATTERN; i++) {
+        if (p->u8Id == u8Id) {
+            p->u8Id = 0;
+            break;
+        }
+        p++;
+    }
+}
+
+//指定したDIOピンに設定されたパターンを削除する
+//pinNo DIOピン番号 0-19
+//この場合コールバック関数は呼ばれません
+void led_clearDioPattern(uint8_t pinNo) {
+    uint8_t i;
+    LEDPATTERN *p = &ledPatterns[0];
+    for (i=0; i<MAX_LED_PATTERN; i++) {
+        if (p->u8Id != 0 && p->u8Led == pinNo) {
+            p->u8Id = 0;
+        }
+        p++;
+    }
+}
+
+//led_update()から呼ばれる
+//パターンのカウンタをインクリメントし、必要に応じて出力フラグを切り替えます
+//カウントが終了するとコールバック関数を呼び出します。
+static void led_count() {
+    uint8_t i;
+    LEDPATTERN *p = &ledPatterns[0];
+    for (i=0; i<MAX_LED_PATTERN; i++) {
+        if (p->u8Id != 0) {
+            //有効なパターン
+
+            //カウントを進める
+            p->u16Count++;
+            if (p->bState) {
+                if (p->u16Count == p->u16OnCount) {
+                    if (p->i16Cycle != -1 && --(p->i16Cycle) == 0) {
+                        //サイクル終了。コールバック関数があれば呼び出す
+                        uint8_t id = p->u8Id;
+                        p->u8Id = 0;
+                        if (p->callbackFunction != NULL) (*(p->callbackFunction))(id);
+                    } else {
+                        //ON=>OFF
+                        p->u16Count = 0;
+                        p->bState = FALSE;
+                    }
+                }
+            } else {
+                if (p->u16Count == p->u16OffCount) {
+                    if (p->i16Cycle != -1 && --(p->i16Cycle) == 0) {
+                        //サイクル終了。コールバック関数があれば呼び出す
+                        uint8_t id = p->u8Id;
+                        p->u8Id = 0;
+                        if (p->callbackFunction != NULL) (*(p->callbackFunction))(id);
+                    } else {
+                        //OFF=>ON
+                        p->u16Count = 0;
+                        p->bState = TRUE;
+                    }
+                }
+            }
+        }
+        p++;
+    }
+}
+
+//led_update()から呼ばれる
+//指定されたピン番号の出力を決定する
+static int8_t led_calc(uint8_t u8Led) {
+    uint8_t i;
+    bool_t def;
+
+    LEDINFO *q = &ledInformations[0];
+    for (i=0; i<MAX_LED; i++) {
+        if (q->u8Led == u8Led) {
+            def = q->bDefaultIsOn;
+            break;
+        }
+        q++;
+    }
+    if (i == MAX_LED) return -1;
+
+    uint8_t priority = 0;
+    bool_t b = def;
+    LEDPATTERN *p = &ledPatterns[0];
+    for (i=0; i<MAX_LED_PATTERN; i++) {
+        if (p->u8Id != 0 && p->u8Led == u8Led && p->u8Priority >= priority) {
+            //計算すべきパターン
+
+            if (p->u8Priority == priority) {
+                //優先順位が同じ
+                if (def) {
+                    b &= p->bState;
+                } else {
+                    b |= p->bState;
+                }
+            } else {
+                //優先順位が高い
+                b = p->bState;
+                priority = p->u8Priority;
+            }
+        }
+        p++;
+    }
+    return b;
+}
+
+//TICK_TIMERから呼ばれる
+static void led_update() {
+
+    //カウントを進める
+    led_count();
+
+    //LED毎に出力を計算する
+    uint8_t i;
+    LEDINFO *p = &ledInformations[0];
+    for (i=0; i<MAX_LED; i++) {
+        if (p->u8Led != 255) {
+            bool_t b = led_calc(p->u8Led);
+            dio_write(p->u8Led, p->bHighToOn ? b : !b);
+        }
+        p++;
+    }
+}
+
+#endif //USE_LEDUTIL
+
 
 /*
  * スリープ
  */
+
+
+//スリープに使用される32kHzオシレータの校正値を取得します
+//返り値を sleepCalibratedTimer() に渡すことでスリープ時間の精度向上が望めます
+//この関数の実行によりウェイクタイマーが停止、起床フラグがリセットされるため、
+//setup() 内で使用する場合は、timerWake() などの起床条件チェックを行った後に実行してください
+//この関数は実行に約0.5ミリ秒を要します
+uint32_t wakeTimer_getCalibrationValue() {
+    vAHI_WakeTimerStop(E_AHI_WAKE_TIMER_0);
+    u8AHI_WakeTimerFiredStatus();
+    return u32AHI_WakeTimerCalibrate();
+}
+
+//デフォルトの32kHzRCオシレータを使用する場合は、calibValueには wakeTimer_getCalibrationValue() で得た値を渡します。
+//外部クロックを使用する場合は、 wakeTimer_getCalibrationValue() で計測してもよいですが、
+//正確なクロックが予めわかっている場合は計算値を渡すこともできます。
+//例えば 32.768kHz の水晶発振子を使用した場合、calibValue = 10000 x 32000 ÷ 32768 = 9765 となります。
+bool_t sleepCalibratedTimer(uint64_t milliSeconds, bool_t bRAMPower, uint32_t calibValue) {
+    if (calibValue == 0) return FALSE;
+
+    uint64_t count = milliSeconds * 320000 / calibValue; //x32 x1000 /calibValue
+    if (count > 0x1FFFFFFFFFF) return FALSE; 
+
+    vAHI_WakeTimerEnable(0, TRUE);
+    vAHI_WakeTimerStartLarge(0, count); //有効範囲 2～0x1FFFFFFFFFF
+    vAHI_Sleep(bRAMPower ? E_AHI_SLEEP_OSCON_RAMON : E_AHI_SLEEP_OSCON_RAMOFF);
+    return TRUE;
+}
 
 //milliSeconds = 1..68719476735ミリ秒(795日+)
 bool_t sleepTimer(uint64_t milliSeconds, bool_t bRAMPower) {
@@ -786,6 +1120,30 @@ static BYTEQUE sSerialRxQue0;                   //二次バッファ管理用キ
 void serial0UpdateRxBuffer();
 #endif
 
+
+//New serial_printf()
+//出力できなかった場合は１文字も出力せずにFALSEを返します
+bool_t serial_printf(const char *fmt, ...) {
+    //パラメータを取得
+    va_list ap;
+    va_start(ap, fmt);
+
+    //バッファへの書き込みパラメータを設定
+    char buf[SERIAL_TX_BUFFER_SIZE];
+    __printf_putc_init(buf, SERIAL_TX_BUFFER_SIZE);
+
+    //bufにprintf
+    if (!__printf(__printf_putc, fmt, ap)) {
+        //バッファオーバーフロー
+        va_end(ap);
+        return FALSE;
+    }
+    va_end(ap);
+
+    //シリアルに書き出す
+    return serial_write((uint8_t *)buf, __printf_putc_count);
+}
+
 //シリアル0を初期化する
 //bUseSecondPin RXD   TXD   RTS   CTS
 //  FALSE       DIO7  DIO6  DIO5  DIO4
@@ -950,6 +1308,29 @@ static uint8_t au8SerialRxBuffer1[SERIAL1_RX_BUFFER_SIZE];
 
 //u8AHI_UartReadLineStatus()の値を保持
 uint8_t serial1StatusBit;
+
+//New serial1_printf()
+//出力できなかった場合は１文字も出力せずにFALSEを返します
+bool_t serial1_printf(const char *fmt, ...) {
+    //パラメータを取得
+    va_list ap;
+    va_start(ap, fmt);
+
+    //バッファへの書き込みパラメータを設定
+    char buf[SERIAL1_TX_BUFFER_SIZE];
+    __printf_putc_init(buf, SERIAL1_TX_BUFFER_SIZE);
+
+    //bufにprintf
+    if (!__printf(__printf_putc, fmt, ap)) {
+        //バッファオーバーフロー
+        va_end(ap);
+        return FALSE;
+    }
+    va_end(ap);
+
+    //シリアルに書き出す
+    return serial1_write((uint8_t *)buf, __printf_putc_count);
+}
 
 //シリアル1を初期化する
 //bUseSecondPin RXD   TXD
@@ -2088,13 +2469,13 @@ void spi_writeByte(int8_t slaveNo, uint8_t u8Command, uint8_t u8Data) {
  * 無線通信
  */
 
-#if defined(USE_RADIO) || defined(USE_RADIO_TXONLY)
+#ifdef USE_RADIO
 
 //送信完了割り込みルーチンのポインタを保持
 static void (*radioTxCallbackFunction)(uint8_t, bool_t);
 
 //受信割り込みルーチンのポインタを保持
-static void (*radioRxCallbackFunction)(uint32_t, uint8_t, uint8_t, uint8_t *, uint8_t, uint8_t);
+static void (*radioRxCallbackFunction)(uint32_t, bool_t, uint8_t, uint8_t, uint8_t *, uint8_t, uint8_t);
 
 //送信シーケンス番号を保持
 static uint8_t u8RadioSeqNo;
@@ -2102,19 +2483,51 @@ static uint8_t u8RadioSeqNo;
 //送信中のデータ数を保持
 static uint8_t u8NumRadioTx;
 
+//ACKが得られない場合の再送回数
+static uint8_t u8RadioRetryCount;
+
+//再送間隔
+static uint16_t u16RadioRetryDuration;
+
+//setup()関数内で使用すること
+//有効な appid の範囲。0xHHHHLLLLの場合、HHHH,LLL共に0x0001～0x7FFF
+//有効な channel の範囲。11～26
+//txPower 送信出力。0～3 (弱～強)
+bool_t radio_setupInit(RADIOMODE mode, uint32_t appid, uint8_t channel, uint8_t txPower) {
+    uint16_t w = appid & 0xffff;
+    if (w < 0x0001 || w > 0x7fff) return FALSE;
+    w = appid >> 16;
+    if (w < 0x0001 || w > 0x7fff) return FALSE;
+    if (channel < 11 || channel > 26) return FALSE;
+    if (txPower > 3) return FALSE;
+
+    sToCoNet_AppContext.u8MacInitPending = (mode == RADIO_MODE_OFF);
+    sToCoNet_AppContext.u32AppId = appid;
+    sToCoNet_AppContext.u8Channel = channel;
+    sToCoNet_AppContext.bRxOnIdle = (mode == RADIO_MODE_TXRX);
+	sToCoNet_AppContext.u8TxPower = txPower;
+    return TRUE;
+}
+
+//ACKが得られない場合の再送信回数を設定 0..7。デフォルトは 2
+//ブロードキャスト送信の場合は常に u8Retry+1 回の送信が行われる
+//retryDurationは再送間隔(ミリ秒)。デフォルトは10ms
+bool_t radio_setRetry(uint8_t retryCount, uint16_t retryDuration) {
+    if (retryCount > 7) return FALSE;
+    u8RadioRetryCount = retryCount;
+    u16RadioRetryDuration = retryDuration;
+    return TRUE;
+}
+
 //送信中のデータ数
 uint8_t radio_txCount() {
     return u8NumRadioTx;
 }
 
 //無線送信完了、受信割り込みルーチンを設定する
-void radio_attachCallback(void (*txFunc)(uint8_t u8CbId, bool_t bSuccess), void (*rxFunc)(uint32_t u32SrcAddr, uint8_t u8CbId, uint8_t u8DataType, uint8_t *pu8Data, uint8_t u8Length, uint8_t u8Lqi)) {
+void radio_attachCallback(void (*txFunc)(uint8_t u8CbId, bool_t bSuccess), void (*rxFunc)(uint32_t u32SrcAddr, bool_t bBroadcast, uint8_t u8CbId, uint8_t u8DataType, uint8_t *pu8Data, uint8_t u8Length, uint8_t u8Lqi)) {
     radioTxCallbackFunction = txFunc;
-#ifdef USE_RADIO
     radioRxCallbackFunction = rxFunc;
-#else
-    radioRxCallbackFunction = NULL;
-#endif
 }
 /*
 //無線送信完了割り込みルーチンを設定する
@@ -2136,7 +2549,7 @@ void radio_attachRxCallback(void (*func)(uint32_t u32SrcAddr, uint8_t u8CbId, ui
 //pu8Data=データ, u8Length=データ長さ(最大108バイト), u8DataType=データの簡易識別番号(0..7)
 //簡易識別番号は受け取り側が何のデータか知るために使う。使用しない場合は値はなんでもよい
 //関数はエラーで-1、送信開始で8bitの送信Id(u8CbId)を返す。これは送信完了コールバックで送信データの識別に使用される。
-int16_t radio_write(uint32_t u32DestAddr, uint8_t *pu8Data, uint8_t u8Length, uint8_t u8DataType)
+int16_t radio_write(uint32_t u32DestAddr, uint8_t u8DataType, uint8_t *pu8Data, uint8_t u8Length)
 {
     if (u8Length > 108) return -1;
 
@@ -2155,13 +2568,13 @@ int16_t radio_write(uint32_t u32DestAddr, uint8_t *pu8Data, uint8_t u8Length, ui
     memcpy(tsTx.auData, pu8Data, u8Length);
 
 	tsTx.bAckReq = (u32DestAddr != TOCONET_MAC_ADDR_BROADCAST); //TRUE Ack付き送信を行う
-	tsTx.u8Retry = TX_RETRY | 0x80;  		        //MACによるAck付き送信失敗時に、さらに再送する場合(ToCoNet再送)の再送回数
+	tsTx.u8Retry = u8RadioRetryCount | 0x80;  		//MACによるAck付き送信失敗時に、さらに再送する場合(ToCoNet再送)の再送回数
 
 	//tsTx.u16ExtPan = 0;                           //0:外部PANへの送信ではない 1..0x0FFF: 外部PANへの送信 (上位4bitはリザーブ)
 
-	//tsTx.u16DelayMax = 0;       //送信開始までのディレー(最大)[ms]。指定しない場合は 0 にし、指定する場合は Min 以上にすること。
-	//tsTx.u16DelayMin = 0;       //送信開始までのディレー(最小)[ms]
-	tsTx.u16RetryDur = 10;      //再送間隔[ms]。
+	//tsTx.u16DelayMax = 0;                         //送信開始までのディレー(最大)[ms]。指定しない場合は 0 にし、指定する場合は Min 以上にすること。
+	//tsTx.u16DelayMin = 0;                         //送信開始までのディレー(最小)[ms]
+	tsTx.u16RetryDur = u16RadioRetryDuration;       //再送間隔[ms]。
 
     //送信
     if (ToCoNet_bMacTxReq(&tsTx)) {
@@ -2180,11 +2593,11 @@ int16_t radio_write(uint32_t u32DestAddr, uint8_t *pu8Data, uint8_t u8Length, ui
 //radio_write()の簡易版
 //関数はエラーで-1、送信開始で8bitの送信Id(u8CbId)を返す。これは送信完了コールバックで送信データの識別に使用される
 //u8DataType=データの簡易識別番号(0..7)
-int16_t radio_puts(uint32_t u32DestAddr, const char *pu8String, uint8_t u8DataType)
+int16_t radio_puts(uint32_t u32DestAddr, uint8_t u8DataType, const char *pu8String)
 {
     uint32_t len = (uint32_t)strlen(pu8String);
     if (len > 108) return -1;
-    return radio_write(u32DestAddr, (uint8_t *)pu8String, (uint8_t)len, u8DataType);
+    return radio_write(u32DestAddr, u8DataType, (uint8_t *)pu8String, (uint8_t)len);
 }
 
 //radio_write()のprintf版
@@ -2195,7 +2608,30 @@ int16_t radio_puts(uint32_t u32DestAddr, const char *pu8String, uint8_t u8DataTy
     return radio_puts(u32DestAddr, SPRINTF_pu8GetBuff());
 }*/
 
-#endif //USE_RADIO || USE_RADIO_TXONLY
+//New radio_printf()
+//出力できなかった場合は１文字も出力せずにFALSEを返します
+bool_t radio_printf(uint32_t u32DestAddr, uint8_t u8DataType, const char* fmt, ...) {
+    //パラメータを取得
+    va_list ap;
+    va_start(ap, fmt);
+
+    //バッファへの書き込みパラメータを設定
+    char buf[108];
+    __printf_putc_init(buf, 108);
+
+    //bufにprintf
+    if (!__printf(__printf_putc, fmt, ap)) {
+        //バッファオーバーフロー
+        va_end(ap);
+        return FALSE;
+    }
+    va_end(ap);
+
+    //無線送信する
+    return radio_write(u32DestAddr, u8DataType, (uint8_t *)buf, __printf_putc_count);
+}
+
+#endif //USE_RADIO
 
 
 /*
@@ -2319,7 +2755,10 @@ static void vProcessEvCore(tsEvent *pEv, teEvent eEvent, uint32_t u32evarg)
         break;
     case E_EVENT_TICK_TIMER: 
 #ifdef USE_PBUTIL
-        pb_update(); //プッシュボタンの状態を更新
+        pb_update();    //プッシュボタンの状態を更新
+#endif
+#ifdef USE_LEDUTIL
+        led_update();   //LEDの状態を更新
 #endif
         loop(EVENT_TICK_TIMER);
         break;
@@ -2329,7 +2768,7 @@ static void vProcessEvCore(tsEvent *pEv, teEvent eEvent, uint32_t u32evarg)
     }
 }
 
-#if defined(USE_RADIO) || defined(USE_RADIO_TXONLY)
+#ifdef USE_RADIO
 static uint32_t u32SrcAddrPrev;
 static uint32_t u32MillisPrev;
 static uint8_t u8seqPrev;
@@ -2344,6 +2783,12 @@ void resetVars()
     u32PBPressed = 0;
     u32PBReleased = 0;
     memset(u8PBDelayCount, 0, sizeof(u8PBDelayCount));
+#endif
+
+#ifdef USE_LEDUTIL
+    memset(ledInformations, 255, sizeof(ledInformations));
+    u8LedIdGen = 1;
+    memset(ledPatterns, 0, sizeof(ledPatterns));
 #endif
 
 #ifdef USE_DIO
@@ -2390,11 +2835,13 @@ void resetVars()
     i2csi16BufSelForMWCallback = -1;
 #endif
 
-#if defined(USE_RADIO) || defined(USE_RADIO_TXONLY)
+#ifdef USE_RADIO
     radioTxCallbackFunction = NULL;
     radioRxCallbackFunction = NULL;
     u8RadioSeqNo = 0;
     u8NumRadioTx = 0;
+    u8RadioRetryCount = 2;
+    u16RadioRetryDuration = 10;
 
     u32SrcAddrPrev = 0;
     u32MillisPrev = 0;
@@ -2404,6 +2851,9 @@ void resetVars()
     millisValue = 0;
 
 #ifdef USE_SBUTIL
+    __sb_ptr = __sb_buf;
+    __sb_count = 0;
+/*
 #if SB_BUFFER_SIZE == 32
         SPRINTF_vInit32();
 #elif SB_BUFFER_SIZE == 64
@@ -2419,34 +2869,29 @@ void resetVars()
 #else
 #error Invalid SB_BUFFER_SIZE value.
 #endif
+*/
 #endif
 }
 
 void initAppContext()
 {
-#if defined(USE_RADIO) || defined(USE_RADIO_TXONLY)
-	sToCoNet_AppContext.u32AppId = APP_ID;      //!< 32bitのアプリケーションID。本IDでToCoNet同士の識別を行う。（必須設定項目）
-	sToCoNet_AppContext.u8Channel = CHANNEL;    //!< モジュールのチャネル。NWK層の動作により変更される場合がある。(必須設定項目, Chマスクに存在するチャネルを指定すること)
 #ifdef USE_RADIO
-	sToCoNet_AppContext.bRxOnIdle = TRUE;       //!< TRUE:無線回路アイドル時も受信回路をオープンする。受信が必要な場合は必ずTRUEに設定する。(規定値は FALSE, Nwk層ではTRUE必須)
-#else
-    sToCoNet_AppContext.bRxOnIdle = FALSE;      //受信しない
-#endif
-#else
+    //radio_setupInit() が呼ばれない場合はペンディングモードで起動
 	sToCoNet_AppContext.u8MacInitPending = TRUE; //!< TRUE:MAC 層の初期化をシステム始動時に行わない。無線部を使用せずに動作させる場合に設定します。
-#endif
+    //以下、適当
+	sToCoNet_AppContext.u32AppId = 0x44444444;  //!< 32bitのアプリケーションID。本IDでToCoNet同士の識別を行う。
+	sToCoNet_AppContext.u8Channel = 15;         //!< モジュールのチャネル。NWK層の動作により変更される場合がある。
+	sToCoNet_AppContext.bRxOnIdle = FALSE;      //!< TRUE:無線回路アイドル時も受信回路をオープンする。受信が必要な場合は必ずTRUEに設定する。
+	sToCoNet_AppContext.u8TxPower = 3; 	        //!< モジュールの出力 3:最大 2: -11.5db 2: -23db 0:-34.5db となる (規定値は 3)
 	//uint32 u32ChMask; 			            //!< 利用するチャネル群。NWK層やNeibourScanで利用する。(必須設定項目)
 	//uint16 u16ShortAddress; 	                //!< モジュールのショートアドレス。指定しなければモジュールのシリアル番号から自動生成される。0xFFFFは指定出来ない。Nwk層利用時は指定しないこと。
+#endif
 
 #ifdef CPU_CLOCK
 	sToCoNet_AppContext.u8CPUClk = CPU_CLOCK; 	//!< 通常稼働時のCPUクロック。3:32MHz, 2:16Mhz, 1:8Mhz, 0:4Mhz を指定する(規定値は 2)
 #endif
 
-#ifdef TX_POWER
-	sToCoNet_AppContext.u8TxPower = TX_POWER; 	//!< モジュールの出力 3:最大 2: -11.5db 2: -23db 0:-34.5db となる (規定値は 3)
-#endif
-	//uint8 u8TxMacRetry; 		//!< MAC層の再送回数 7..0 を指定する。(規定値は3, Nwk層では１を推奨)
-
+	//uint8_t u8TxMacRetry; 		//!< MAC層の再送回数 7..0 を指定する。(規定値は3, Nwk層では１を推奨)
 	//bool_t bPromiscuousMode; 	//!< テスト受信モード。通常は設定してはいけません (規定値は FALSE)
 	//bool_t bSkipBootCalib;		//!< 始動時のキャリブレーション処理を省略する
 	//uint8 u8Osc32Kmode; 		//!< 32K 水晶のモード (0x00: RC, 0x02: 32K水晶, 0x03: 32K発振器)
@@ -2475,10 +2920,10 @@ void regMod() {
 
     //乱数生成アルゴリズムを登録。登録しない場合はハードウェア乱数を使用
     //ToCoNet_REG_MOD_MTRAND(); //MT法を使用する場合はライセンス表記が必要
-    ToCoNet_vReg_mod_Rand_Xor_Shift();
-    //ToCoNet_REG_MOD_RAND_XOR_SHIFT();
+    //ToCoNet_vReg_mod_Rand_Xor_Shift();
+    ToCoNet_REG_MOD_RAND_XOR_SHIFT();
 
-#if defined(USE_RADIO) || defined(USE_RADIO_TXONLY)
+#ifdef USE_RADIO
     //送受信キューを確保する(はず)
     ToCoNet_REG_MOD_TXRXQUEUE();
 
@@ -2578,7 +3023,7 @@ void cbAppColdStart(bool_t bAfterAhiInit)
         //ユーザーの初期化ルーチンを呼び出す
         setup(FALSE, bitmapWakeStatus);
 
-#if defined(USE_RADIO) || defined(USE_RADIO_TXONLY)
+#ifdef USE_RADIO
         // MAC 層開始
         ToCoNet_vMacStart();
 #endif
@@ -2618,7 +3063,7 @@ void cbAppWarmStart(bool_t bAfterAhiInit)
         //ユーザーの初期化ルーチンを呼び出す
         setup(TRUE, bitmapWakeStatus);
 
-#if defined(USE_RADIO) || defined(USE_RADIO_TXONLY)
+#ifdef USE_RADIO
         // MAC 層開始
         ToCoNet_vMacStart();
 #endif
@@ -2646,7 +3091,7 @@ void cbToCoNet_vRxEvent(tsRxDataApp *pRx)
 
     if (radioRxCallbackFunction != NULL) {
         //受信ルーチンを呼び出す
-        (*radioRxCallbackFunction)(pRx->u32SrcAddr, pRx->u8Seq, pRx->u8Cmd, pRx->auData, pRx->u8Len, pRx->u8Lqi);
+        (*radioRxCallbackFunction)(pRx->u32SrcAddr, pRx->u32DstAddr == RADIO_ADDR_BROADCAST, pRx->u8Seq, pRx->u8Cmd, pRx->auData, pRx->u8Len, pRx->u8Lqi);
     }
 #endif
 }
@@ -2654,7 +3099,7 @@ void cbToCoNet_vRxEvent(tsRxDataApp *pRx)
 // パケット送信完了時
 void cbToCoNet_vTxEvent(uint8_t u8CbId, uint8_t bStatus)
 {
-#if defined(USE_RADIO) || defined(USE_RADIO_TXONLY)
+#ifdef USE_RADIO
     //送信中データカウント
     u8NumRadioTx--;
 
@@ -3000,3 +3445,400 @@ uint8_t cbToCoNet_u8HwInt(uint32_t u32DeviceId, uint32_t u32ItemBitmap)
 void cbToCoNet_vMain(void)
 {
 }
+
+
+
+
+#ifdef USE_PRINTF
+#define _isnumc(x) ( (x) >= '0' && (x) <= '9' )
+#define _ctoi(x)   ( (x) -  '0' )
+
+
+#define    ZERO_PADDING         (1<<1)  //0埋め
+#define    ALTERNATIVE          (1<<2)  //形式を表示。16進数で 0x など
+#define    THOUSAND_GROUP       (1<<3)  //3桁毎に ,
+#define    CAPITAL_LETTER       (1<<4)  //16進数表記などで大文字
+#define    WITH_SIGN_CHAR       (1<<5)  //符号付
+#define    LEFT_JUSTIFIED       (1<<6)  //指定桁数が表示桁数より大きいときに左詰め
+
+static bool_t put_integerD(bool_t (*__putc)(char), uint64_t n, int32_t length, int8_t sign, uint8_t flags);
+static bool_t put_integerX(bool_t (*__putc)(char), uint64_t n, int32_t length, uint8_t flags);
+static bool_t put_integerO(bool_t (*__putc)(char), uint64_t n, int32_t length, uint8_t flags);
+static bool_t put_integerB(bool_t (*__putc)(char), uint64_t n, int32_t length, uint8_t flags);
+
+//__putc()がFALSEを返したときに__printf()もFALSEを返す
+//末尾の'\0'は書き込まない
+static bool_t __printf(bool_t (*__putc)(char), const char *fmt, va_list ap) {
+    //va_list ap;
+    //va_start(ap, fmt);
+
+    for (;;) {
+        uint64_t ui;
+        int64_t i;
+        uint8_t *s = NULL;
+        uint8_t sign = 0;
+        uint8_t flags = 0;
+        int32_t length = 0;
+        int32_t tmp = 0;
+        uint8_t int_type = 32;
+
+        // % まで進める
+        while (*fmt && *fmt != '%') {
+            if (!__putc(*fmt++)) return FALSE;
+        }
+
+        if (*fmt == '\0') {
+            //va_end(ap);
+            break;
+        }
+
+        //フラグを取得
+        fmt++;
+        while (strchr("'-+ #0", *fmt)) {
+            switch (*fmt++) {
+                case '\'': flags |= THOUSAND_GROUP;             break;
+                case  '-': flags |= LEFT_JUSTIFIED;             break;
+                case  '+': flags |= WITH_SIGN_CHAR; sign = '+'; break;
+                case  '#': flags |= ALTERNATIVE;                break;
+                case  '0': flags |= ZERO_PADDING;               break;
+                case  ' ': flags |= WITH_SIGN_CHAR; sign = ' '; break;
+            }
+        }
+
+        //表示幅
+        if (*fmt == '*') {
+            //変数で指定できる
+            length = va_arg(ap, int32_t);
+            fmt++;
+        }
+        else {
+            while (_isnumc(*fmt)) {
+                length = (length * 10) + _ctoi(*fmt++);
+            }
+        }
+
+        //浮動小数点は扱わない
+        /*if (*fmt == '.') {
+            fmt++;
+            if (*fmt == '*') {
+                fmt++;
+                precision = va_arg(ap, int);
+            }
+            else {
+                while (_isnumc(*fmt) ) {
+                    precision = precision * 10 + _ctoi(*fmt++);
+                }
+            }
+        }*/
+
+        //型指定は ll (64bit)のみに対応
+        while (strchr("hljzt", *fmt)) {
+            if (*fmt == 'h') {
+                fmt++;
+                if (*fmt == 'h') {
+                    int_type = 8;  //hh
+                    fmt++;
+                } else {
+                    int_type = 16;
+                }
+            } else if (*fmt == 'l') {
+                fmt++;
+                if (*fmt == 'l') {
+                    int_type = 64;  //ll
+                    fmt++;
+                } else {
+                    int_type = 32;
+                }
+            } else {
+                int_type = 32;
+                fmt++;
+            }
+        }
+
+        switch (*fmt) {
+            case 'd':
+            case 'i':
+                if (int_type == 64) {
+                    i = va_arg(ap, int64_t);
+                } else {
+                    i = va_arg(ap, int32_t);
+                    if (int_type == 16) {
+                        i &= 0xffff;
+                    } else if (int_type == 8) {
+                        i &= 0xff;
+                    }
+                }
+                if (i < 0) {
+                    i = -i;
+                    sign = '-';
+                }
+                if (!put_integerD(__putc, i, length, sign, flags)) return FALSE;
+                break;
+
+            case 'u':
+                if (int_type == 64) {
+                    ui = va_arg(ap, uint64_t);
+                } else {
+                    ui = va_arg(ap, uint32_t);
+                    if (int_type == 16) {
+                        ui &= 0xffff;
+                    } else if (int_type == 8) {
+                        ui &= 0xff;
+                    }
+                }
+                if (!put_integerD(__putc, ui, length, sign, flags)) return FALSE;
+                break;
+
+            case 'o':
+                if (int_type == 64) {
+                    ui = va_arg(ap, uint64_t);
+                } else {
+                    ui = va_arg(ap, uint32_t);
+                    if (int_type == 16) {
+                        ui &= 0xffff;
+                    } else if (int_type == 8) {
+                        ui &= 0xff;
+                    }
+                }
+                if (!put_integerO(__putc, ui, length, flags)) return FALSE;
+                break;
+
+            case 'b':
+                if (int_type == 64) {
+                    ui = va_arg(ap, uint64_t);
+                } else {
+                    ui = va_arg(ap, uint32_t);
+                    if (int_type == 16) {
+                        ui &= 0xffff;
+                    } else if (int_type == 8) {
+                        ui &= 0xff;
+                    }
+                }
+                if (!put_integerB(__putc, ui, length, flags)) return FALSE;
+                break;
+
+            case 'p':
+                length = 8;
+                int_type = 32;
+                sign = 0;
+                flags = ZERO_PADDING | ALTERNATIVE;
+            case 'X':
+                flags |= CAPITAL_LETTER;
+            case 'x':
+                if (int_type == 64) {
+                    ui = va_arg(ap, uint64_t);
+                } else {
+                    ui = va_arg(ap, uint32_t);
+                    if (int_type == 16) {
+                        ui &= 0xffff;
+                    } else if (int_type == 8) {
+                        ui &= 0xff;
+                    }
+                }
+                if (!put_integerX(__putc, ui, length, flags)) return FALSE;
+                break;
+
+            case 'c':
+                //i = get_signed(ap, 8);
+                //__putc(i);
+                __putc((uint8_t)(va_arg(ap, int32_t) & 0xff));
+                break;
+
+            case 's':
+                s = va_arg(ap, uint8_t *);
+                if (s == NULL) s = (uint8_t *)"(null)";
+                tmp = strlen((const char *)s);
+                //if (precision && precision < tmp)  tmp = precision;
+                length -= tmp;
+                if (!(flags & LEFT_JUSTIFIED)) {
+                    while (length > 0) {
+                        length--;
+                        __putc(' ');
+                    }
+                }
+                while (tmp--)  {
+                    __putc(*s++);
+                }
+                while (length-- > 0) {
+                    __putc(' ');
+                }
+                break;
+
+            case '%':
+                __putc('%');
+                break;
+
+            default:
+                //既定のフォーマットでなかったのでポインタを戻す
+                while (*fmt != '%') fmt--;
+                break;
+        }
+
+        fmt++;
+    }
+    return TRUE;
+}
+
+/*
+1: 表示したい数値(正)
+2: 表示する長さ
+3: 符号 0,' ','+','-'
+4: フラグ
+*/
+static bool_t put_integerD(bool_t (*__putc)(char), uint64_t n, int32_t length, int8_t sign, uint8_t flags) {
+    char buf[26]; //20桁 + ,が6個
+    uint8_t i = 0;
+    uint8_t pad = ' ';
+
+    //buf[]に表示内容の末尾から放り込む
+
+    //64bitの割り算は重い..はず
+    if ((n & 0xffffffff00000000) == 0) {
+        uint32_t m = (uint32_t)n;
+        do {
+            buf[i++] = (m % 10) + '0';
+            if( (flags & THOUSAND_GROUP) && (i & 3)==3) buf[i++] = ',';
+        } while (m /= 10);
+    } else {
+        do {
+            buf[i++] = (n % 10) + '0';
+            if( (flags & THOUSAND_GROUP) && (i & 3)==3) buf[i++] = ',';
+        } while (n /= 10);
+    }
+
+    length -= i;
+
+    if (sign) {
+        if (!__putc(sign)) return FALSE;
+    }
+
+    if (!(flags & LEFT_JUSTIFIED)) {
+        if(flags & ZERO_PADDING) pad = '0';
+        while (length > 0) {
+            length--;
+            if (!__putc(pad)) return FALSE;
+        }
+    }
+
+    while (i > 0) {
+        if (!__putc(buf[--i])) return FALSE;
+    }
+    while (length > 0) {
+        length--;
+        if (!__putc(pad)) return FALSE;
+    }
+    return TRUE;
+}
+
+
+static bool_t put_integerX(bool_t (*__putc)(char), uint64_t n, int32_t length, uint8_t flags) {
+    static char *symbols_s = "0123456789abcdef";
+    static char *symbols_c = "0123456789ABCDEF";
+
+    char buf[16];
+    uint8_t i = 0;
+    uint8_t pad = ' ';
+    char *symbols = (flags & CAPITAL_LETTER ? symbols_c : symbols_s);
+
+    //buf[]に表示内容の末尾から放り込む
+
+    do {
+        buf[i++] = symbols[n & 15];
+    } while (n >>= 4);
+
+    length -= i;
+
+    if (flags & ALTERNATIVE) {
+        if (!__putc('0')) return FALSE;
+        if (!__putc('x')) return FALSE;
+    }
+
+    if (!(flags & LEFT_JUSTIFIED)) {
+        if(flags & ZERO_PADDING) pad = '0';
+        while (length > 0) {
+            length--;
+            if (!__putc(pad)) return FALSE;
+        }
+    }
+
+    while (i > 0) {
+        if (!__putc(buf[--i])) return FALSE;
+    }
+    while (length > 0) {
+        length--;
+        if (!__putc(pad)) return FALSE;
+    }
+    return TRUE;
+}
+
+static bool_t put_integerO(bool_t (*__putc)(char), uint64_t n, int32_t length, uint8_t flags) {
+    char buf[22];
+    uint8_t i = 0;
+    uint8_t pad = ' ';
+
+    //buf[]に表示内容の末尾から放り込む
+
+    do {
+        buf[i++] = (n & 7) + '0';
+    } while (n >>= 3);
+
+    length -= i;
+
+    if (flags & ALTERNATIVE) {
+        if (!__putc('0')) return FALSE;
+    }
+
+    if (!(flags & LEFT_JUSTIFIED)) {
+        if(flags & ZERO_PADDING) pad = '0';
+        while (length > 0) {
+            length--;
+            if (!__putc(pad)) return FALSE;
+        }
+    }
+
+    while (i > 0) {
+        if (!__putc(buf[--i])) return FALSE;
+    }
+    while (length > 0) {
+        length--;
+        if (!__putc(pad)) return FALSE;
+    }
+    return TRUE;
+}
+
+static bool_t put_integerB(bool_t (*__putc)(char), uint64_t n, int32_t length, uint8_t flags) {
+    char buf[64];
+    uint8_t i = 0;
+    uint8_t pad = ' ';
+
+    //buf[]に表示内容の末尾から放り込む
+
+    do {
+        buf[i++] = (n & 1) + '0';
+    } while (n >>= 1);
+
+    length -= i;
+
+    if (flags & ALTERNATIVE) {
+        if (!__putc('0')) return FALSE;
+        if (!__putc('b')) return FALSE;
+    }
+
+    if (!(flags & LEFT_JUSTIFIED)) {
+        if(flags & ZERO_PADDING) pad = '0';
+        while (length > 0) {
+            length--;
+            if (!__putc(pad)) return FALSE;
+        }
+    }
+
+    while (i > 0) {
+        if (!__putc(buf[--i])) return FALSE;
+    }
+    while (length > 0) {
+        length--;
+        if (!__putc(pad)) return FALSE;
+    }
+    return TRUE;
+}
+#endif //USE_PRINTF
