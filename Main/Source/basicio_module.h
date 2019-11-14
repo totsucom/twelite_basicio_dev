@@ -1,7 +1,7 @@
 /*
  * basicio.h
- * バージョン 1.00
- * 2019/10/07 by T.Maeoka
+ * バージョン 2.00
+ * 2019/11/12 by totsucom
  */
 
 
@@ -24,7 +24,6 @@
 //#define USE_FLASH         //フラッシュメモリを使用する
 //#define USE_PBUTIL        //プッシュボタン補助関数 pb_XXX を使用する
 //#define USE_SBUTIL        //文字列バッファ補助関数 sb_XXX を使用する
-//#define USE_LEDUTIL       //LED補助関数 led_XXX を使用する
 
 
 

@@ -4,22 +4,19 @@ Ver.2.0への変更点
  + BASICIO_MAJOR_VER = 2
  + BASICIO_MINOR_VER = 0
 
-2.led_XXX 補助関数の追加
- DIOへのON/OFF出力パターンの合成や優先順位付けを容易にできるようにした
-
-3.32kHzオシレータの校正関数を追加
+2.32kHzオシレータの校正関数を追加
  + uint32_t wakeTimer_getCalibrationValue()
  + bool_t sleepCalibratedTimer(uint64_t milliSeconds, bool_t bRAMPower, uint32_t calibValue)
  + bool_t wakeTimer_isRunning()
  + uint64_t wakeTimer_readCount()
 
-4. xxx_printf()系関数を改良
+3. xxx_printf()系関数を改良
  意図しない改行が挿入される問題を修正するとともに対応書式の拡充
  これに関連して、
   + serial_printf(), radio_printf() は内部的に sb_printf() を使用していたが、この３つを独立させることでバッファの共有(衝突)を無くした。
   + serial_printf(), radio_printf(), 書き込み系の sb_XXX で返り値がvoidからbool_tとなり、エラーを返せるようになった。
 
-5. radio_XXX 関数の見直し
+4. radio_XXX 関数の見直し
  radio_xxx() 関数の初期化を定数宣言から setup() 内での初期化に変更。これにより起動時に無線通信モードを選択できるようになった。
  これにより、v1.0との互換性が失われています。
  追加
@@ -28,4 +25,9 @@ Ver.2.0への変更点
  廃止
   + basicio_module.h 内の、USE_RADIO_TXONLY, APP_ID, CHANNEL, TX_POWER, TX_RETRY 定数を廃止
  その他
-  + radio_attachCallback()で設定する受信コールバック関数の引数にブロードキャスト送信かどうかを表すパラメータを追加
+  + radio_write(), radio_puts() のパラメータ u8DataType の位置を変更（統一）
+  + radio_attachCallback()で設定する受信コールバック関数の引数にブロードキャスト送信かどうかを示すパラメータを追加
+
+5.led_XXX 補助関数の追加
+ 追加してみたものの、いいものではないので次期バージョンで削除します。
+ ソースはありますがデフォルトでコンパイルされないのでバイナリサイズの無駄にはなりません。

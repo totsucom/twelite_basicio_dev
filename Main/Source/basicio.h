@@ -1,7 +1,7 @@
 /*
  * basicio.h
- * バージョン 2.0
- * 2019/---/--- by T.Maeoka
+ * バージョン 2.00
+ * 2019/11/12 by totsucom
  */
 
 #ifndef __BASICIO_H

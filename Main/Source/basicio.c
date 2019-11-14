@@ -1,13 +1,7 @@
 /*
  * basicio.h
- * バージョン 1.00 ????
- * ???? 2019/10/07 by T.Maeoka
- * 
- * 
- * LED補助関数を追加
- * 　定義　 USE_LEDUTIL
- * 　関数名 led_XXX()
- * 
+ * バージョン 2.00
+ * 2019/11/12 by totsucom
  */
 
 #include "basicio.h"
@@ -437,8 +431,6 @@ static void led_update() {
 
 //スリープに使用される32kHzオシレータの校正値を取得します
 //返り値を sleepCalibratedTimer() に渡すことでスリープ時間の精度向上が望めます
-//この関数の実行によりウェイクタイマーが停止、起床フラグがリセットされるため、
-//setup() 内で使用する場合は、timerWake() などの起床条件チェックを行った後に実行してください
 //この関数は実行に約0.5ミリ秒を要します
 uint32_t wakeTimer_getCalibrationValue() {
     vAHI_WakeTimerStop(E_AHI_WAKE_TIMER_0);
@@ -3450,6 +3442,10 @@ void cbToCoNet_vMain(void)
 
 
 #ifdef USE_PRINTF
+
+//下記をベースにTWELITE使用に改造しました。感謝！
+//http://blog.livedoor.jp/hiroumauma/archives/1676244.html
+
 #define _isnumc(x) ( (x) >= '0' && (x) <= '9' )
 #define _ctoi(x)   ( (x) -  '0' )
 
