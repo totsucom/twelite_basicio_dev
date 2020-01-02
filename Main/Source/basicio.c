@@ -1,21 +1,13 @@
 /*
  * basicio.h
- * バージョン 2.00
- * 2019/11/12 by totsucom
+ * バージョン 3.0
+ * 2020/1/2 totsucom
  */
 
 #include "basicio.h"
 
-#ifdef USE_PRINTF
 
-//#include <stddef.h>
-//#include <stdint.h>
-//#include <string.h>
-#include <stdarg.h>
-
-static bool_t __printf(bool_t (*__putc)(char), const char *fmt, va_list ap);
-
-//__printf()用書き込み補助関数
+//myprintf()用書き込み補助関数
 static char *__printf_putc_ptr;
 static uint16_t __printf_putc_count;
 static uint16_t __printf_putc_size;
@@ -28,7 +20,6 @@ static bool_t __printf_putc(char c) {
     __printf_putc_count++;
     return TRUE;
 }
-#endif //USE_PRINTF
 
 
 static volatile uint32_t millisValue;
@@ -165,7 +156,7 @@ bool_t sb_printf(const char *fmt, ...) {
     uint16_t c = __sb_count;
 
     //bufにprintf
-    if (!__printf(sb_putc, fmt, ap)) {
+    if (!myprintf(sb_putc, fmt, ap)) {
         //バッファオーバーフロー
         va_end(ap);
 
@@ -179,249 +170,12 @@ bool_t sb_printf(const char *fmt, ...) {
 }
 
 const char *sb_getBuffer() {
-    *(__sb_ptr + 1) = '\0';
+    *__sb_ptr = '\0';
     return __sb_buf;
 }
 #endif
 
 
-#ifdef USE_LEDUTIL
-
-typedef struct {
-    uint8_t u8Led;          //LED DIO番号 (255:無効)
-    bool_t bHighToOn;       //HIGHでLED点灯か?
-    bool_t bDefaultIsOn;    //デフォルトでLED点灯か?
-} LEDINFO;
-
-typedef struct {
-    uint8_t u8Id;           //ID (0:無効)
-    uint8_t u8Led;          //LED DIO番号
-    uint8_t u8Priority;     //Highest:255 Lowest:0
-    bool_t bState;          //現在の状態
-    uint16_t u16OnCount;    //ON時間 TICK_TIMER x count
-    uint16_t u16OffCount;   //OFF時間 TICK_TIMER x count
-    uint16_t u16Count;      //current counter (count up)
-    int16_t i16Cycle;       //実行回数(ON,OFFを各1回として数える、count down)、-1:無制限
-    void (*callbackFunction)(uint8_t);  //コールバック関数のポインタ
-} LEDPATTERN;
-
-LEDINFO ledInformations[MAX_LED];
-uint8_t u8LedIdGen;
-LEDPATTERN ledPatterns[MAX_LED_PATTERN];
-
-//指定したDIOピンをLEDとして登録します。
-//DIOは事前にOUTPUTモードに設定しておいてください。
-//pinNo DIOピン0-19
-//bHighToOn HIGHを出力したときにLEDは点灯する回路か?
-//bDefaultIsOn デフォルトでLEDは点灯させるか?
-//返り値 成功時にTRUEを返します
-bool_t led_define(uint8_t pinNo, bool_t bHighToOn, bool_t bDefaultIsOn) {
-    if (pinNo > 19) return FALSE;
-
-    uint8_t i;
-    LEDINFO *p = &ledInformations[0];
-    for (i=0; i<MAX_LED; i++) {
-        if (p->u8Led == 255) {
-            p->u8Led = pinNo;
-            p->bHighToOn = bHighToOn;
-            p->bDefaultIsOn = bDefaultIsOn;
-            return TRUE;
-        }
-        p++;
-    }
-    return FALSE;
-}
-
-//使われていないIDを返す。初期値はu8Idで重複していればインクリメントしていく
-static uint8_t led_getUniqueId(uint8_t u8Id) {
-    uint8_t i;
-    while(1) {
-        if (u8Id == 0) u8Id = 1;
-        LEDPATTERN *p = &ledPatterns[0];
-        for (i=0; i<MAX_LED_PATTERN; i++) {
-            if (p->u8Id == u8Id) break;
-            p++;
-        }
-        if (i == MAX_LED_PATTERN) return u8Id;
-        u8Id++;
-    }
-}
-
-//LEDに点灯パターンを設定します。
-//pinNo DIOピン番号 0-19。led_define()で定義されていること
-//u16OnTime     点灯時間(ミリ秒)
-//u16OffTime    消灯時間(ミリ秒)
-//bStartFromOn  点灯から開始するか?
-//i16Cycle      点灯、消灯それぞれ1回と数えて何回実行するか。-1で無限実行
-//u8Priority    優先順位 0:最低 255:最高。同じ優先順位の場合は出力が合成されます
-//callbackFunction サイクルが完了したときに呼び出すコールバック関数。使用しない場合はNULLを指定します
-//返り値 設定された場合は1-255のIDが返されます。失敗で0
-uint8_t led_setPattern(uint8_t pinNo, uint16_t u16OnTime, uint16_t u16OffTime,
-                        bool_t bStartFromOn, int16_t i16Cycle, uint8_t u8Priority, void (*callbackFunction)(uint8_t u8Id)) {
-    if (pinNo > 19) return 0;//簡易チェック
-
-    uint8_t i;
-    LEDPATTERN *p = &ledPatterns[0];
-    for (i=0; i<MAX_LED_PATTERN; i++) {
-        if (p->u8Id == 0) {
-
-            p->u8Id = led_getUniqueId(u8LedIdGen);
-            u8LedIdGen = p->u8Id + 1;
-            if (u8LedIdGen == 0) u8LedIdGen = 1;
-
-            p->u8Led = pinNo;               //LED DIO番号
-            p->u8Priority = u8Priority;     //Highest:255 Lowest:0
-            p->bState = bStartFromOn;       //現在の状態
-            p->u16Count = 0;                //current counter (count up)
-            p->i16Cycle = i16Cycle;         //実行回数(ON,OFFを各1回として数える、count down)、-1:無制限
-            p->callbackFunction = callbackFunction; //コールバック関数のポインタ
-
-            p->u16OnCount = u16OnTime / millisValueTick;    //ON時間 TICK_TIMER x count
-            if (u16OnTime != 0 && p->u16OnCount == 0) p->u16OnCount = 1;
-
-            p->u16OffCount = u16OffTime / millisValueTick;  //OFF時間 TICK_TIMER x count
-            if (u16OffTime != 0 && p->u16OffCount == 0) p->u16OffCount = 1;
-            return p->u8Id;
-        }
-        p++;
-    }
-    return 0;
-}
-
-//指定したIDのパターンを削除する
-//u8Id led_setPattern()で取得したID
-//この場合コールバック関数は呼ばれません
-void led_clearPattern(uint8_t u8Id) {
-    if (u8Id == 0) return;
-    uint8_t i;
-    LEDPATTERN *p = &ledPatterns[0];
-    for (i=0; i<MAX_LED_PATTERN; i++) {
-        if (p->u8Id == u8Id) {
-            p->u8Id = 0;
-            break;
-        }
-        p++;
-    }
-}
-
-//指定したDIOピンに設定されたパターンを削除する
-//pinNo DIOピン番号 0-19
-//この場合コールバック関数は呼ばれません
-void led_clearDioPattern(uint8_t pinNo) {
-    uint8_t i;
-    LEDPATTERN *p = &ledPatterns[0];
-    for (i=0; i<MAX_LED_PATTERN; i++) {
-        if (p->u8Id != 0 && p->u8Led == pinNo) {
-            p->u8Id = 0;
-        }
-        p++;
-    }
-}
-
-//led_update()から呼ばれる
-//パターンのカウンタをインクリメントし、必要に応じて出力フラグを切り替えます
-//カウントが終了するとコールバック関数を呼び出します。
-static void led_count() {
-    uint8_t i;
-    LEDPATTERN *p = &ledPatterns[0];
-    for (i=0; i<MAX_LED_PATTERN; i++) {
-        if (p->u8Id != 0) {
-            //有効なパターン
-
-            //カウントを進める
-            p->u16Count++;
-            if (p->bState) {
-                if (p->u16Count == p->u16OnCount) {
-                    if (p->i16Cycle != -1 && --(p->i16Cycle) == 0) {
-                        //サイクル終了。コールバック関数があれば呼び出す
-                        uint8_t id = p->u8Id;
-                        p->u8Id = 0;
-                        if (p->callbackFunction != NULL) (*(p->callbackFunction))(id);
-                    } else {
-                        //ON=>OFF
-                        p->u16Count = 0;
-                        p->bState = FALSE;
-                    }
-                }
-            } else {
-                if (p->u16Count == p->u16OffCount) {
-                    if (p->i16Cycle != -1 && --(p->i16Cycle) == 0) {
-                        //サイクル終了。コールバック関数があれば呼び出す
-                        uint8_t id = p->u8Id;
-                        p->u8Id = 0;
-                        if (p->callbackFunction != NULL) (*(p->callbackFunction))(id);
-                    } else {
-                        //OFF=>ON
-                        p->u16Count = 0;
-                        p->bState = TRUE;
-                    }
-                }
-            }
-        }
-        p++;
-    }
-}
-
-//led_update()から呼ばれる
-//指定されたピン番号の出力を決定する
-static int8_t led_calc(uint8_t u8Led) {
-    uint8_t i;
-    bool_t def;
-
-    LEDINFO *q = &ledInformations[0];
-    for (i=0; i<MAX_LED; i++) {
-        if (q->u8Led == u8Led) {
-            def = q->bDefaultIsOn;
-            break;
-        }
-        q++;
-    }
-    if (i == MAX_LED) return -1;
-
-    uint8_t priority = 0;
-    bool_t b = def;
-    LEDPATTERN *p = &ledPatterns[0];
-    for (i=0; i<MAX_LED_PATTERN; i++) {
-        if (p->u8Id != 0 && p->u8Led == u8Led && p->u8Priority >= priority) {
-            //計算すべきパターン
-
-            if (p->u8Priority == priority) {
-                //優先順位が同じ
-                if (def) {
-                    b &= p->bState;
-                } else {
-                    b |= p->bState;
-                }
-            } else {
-                //優先順位が高い
-                b = p->bState;
-                priority = p->u8Priority;
-            }
-        }
-        p++;
-    }
-    return b;
-}
-
-//TICK_TIMERから呼ばれる
-static void led_update() {
-
-    //カウントを進める
-    led_count();
-
-    //LED毎に出力を計算する
-    uint8_t i;
-    LEDINFO *p = &ledInformations[0];
-    for (i=0; i<MAX_LED; i++) {
-        if (p->u8Led != 255) {
-            bool_t b = led_calc(p->u8Led);
-            dio_write(p->u8Led, p->bHighToOn ? b : !b);
-        }
-        p++;
-    }
-}
-
-#endif //USE_LEDUTIL
 
 
 /*
@@ -488,12 +242,84 @@ DIO割り込み起床は可能だが、起床に関する割り込みビット�
 */
 
 
+/*
+ * キュー
+ */
+
+void que_init(BYTEQUE *psQue, uint8_t *pau8Buff, uint16_t u16BuffSize) {
+    psQue->pau8Buff = pau8Buff;
+    psQue->u16BuffSize = u16BuffSize;
+    psQue->u16DataSize = 0;
+    psQue->u16WriteIndex = 0;
+    psQue->bDataLost = FALSE;
+    psQue->u16ReadIndex = 0;
+}
+
+void que_clear(BYTEQUE *psQue) {
+    psQue->u16DataSize = 0;
+    psQue->u16WriteIndex = 0;
+    psQue->bDataLost = FALSE;
+    psQue->u16ReadIndex = 0;
+}
+
+bool_t que_dataLost(BYTEQUE *psQue) {
+    bool_t b = psQue->bDataLost;
+    psQue->bDataLost = FALSE;
+    return b;
+}
+
+void que_append(BYTEQUE *psQue, uint8_t byte) {
+    if (psQue->u16DataSize < psQue->u16BuffSize) {
+        *(psQue->pau8Buff + psQue->u16WriteIndex) = byte;
+        if (++(psQue->u16WriteIndex) >= psQue->u16BuffSize) psQue->u16WriteIndex -= psQue->u16BuffSize;
+        psQue->u16DataSize++;
+    } else {
+        psQue->bDataLost = TRUE;
+    }
+}
+
+int16_t que_get(BYTEQUE *psQue) {
+    if (psQue->u16DataSize == 0) return -1;
+
+    int8_t byte = *(psQue->pau8Buff + psQue->u16ReadIndex);
+    if (++(psQue->u16ReadIndex) >= psQue->u16BuffSize) psQue->u16ReadIndex -= psQue->u16BuffSize;
+    psQue->u16DataSize--;
+    return (int16_t)byte;
+}
+
+
+
 
 /*
  * デジタルIO
  */
 
 #ifdef USE_DIO
+
+bool_t do_enable(bool_t bEnable) {
+    if (bEnable) {
+        if (!bAHI_DoEnableOutputs(bEnable)) return FALSE;
+        vAHI_DoSetPullup(0, 3); //PULLUP OFF
+    } else {
+        //元に戻す
+        vAHI_DoSetPullup(3, 0);     //PULLUP ON
+        vAHI_DoSetDataOut(3, 0);    //HIGH
+        if (!bAHI_DoEnableOutputs(bEnable)) return FALSE;
+    }
+    return TRUE;
+}
+
+bool_t do_write(uint8_t pinNo, uint8_t value) {
+    if (pinNo > 1) return FALSE;
+
+    if (value == LOW) {
+        vAHI_DoSetDataOut(0, 1 << pinNo);
+    } else {
+        vAHI_DoSetDataOut(1 << pinNo, 0);
+    }
+    return TRUE;
+}
+
 
 //pinNO=0..19 mode=INPUT/INPUT_PULLUP/OUTPUT
 bool_t dio_pinMode(uint8_t pinNo, PINMODES mode) {
@@ -688,14 +514,15 @@ bool_t timer_start(uint8_t timerNo) {
 //PWM
 //timerNo=0..4, prescale=0..16, cycleCount=2..65536(0), pulseCount=1..(cycleCount-1), bStartFromLo TRUE:L->H, FALSE:H->L
 //周期 = (1 << prescale) * cycleCount / 16000000 [秒]
-//bUseSecondPin Timer0 Timer1 Timer2 Timer3 Timer4
-//   FALSEの場合  DIO10  DIO11  DIO12  DIO13  DIO17
-//   TRUEの場合   DIO4   DIO5   DIO6   DIO7   DIO8
-bool_t timer_attachPWM(uint8_t timerNo, uint8_t prescale, uint16_t cycleCount, uint16_t pulseCount, bool_t bStartFromHi, bool_t bUseSecondPin, bool_t bStartNow) {
+//pinSelection       Timer0 Timer1 Timer2 Timer3 Timer4
+//  DEFAULT_PINの場合 DIO10  DIO11  DIO12  DIO13  DIO17
+//  SECOND_PINの場合  DIO4   DIO5   DIO6   DIO7   DIO8
+//  DO_PINの場合     (DIO4) (DIO5)  DO0    DO1   (DIO8)
+bool_t timer_attachPWM(uint8_t timerNo, uint8_t prescale, uint16_t cycleCount, uint16_t pulseCount, bool_t bStartFromHi, TIMEROPINSELECTION pinSelection, bool_t bStartNow) {
     if (timerNo > 4) return FALSE;
     if (cycleCount != 0 && pulseCount > cycleCount) return FALSE;
 
-    vAHI_TimerSetLocation(timerNo, bUseSecondPin, FALSE);
+    vAHI_TimerSetLocation(timerNo, (pinSelection != DEFAULT_PIN), (pinSelection == DO_PIN));
 
     uint8_t b = 4 << timerNo;
     if ((timerFineGrainDIOControlValue & b) != 0) {
@@ -725,10 +552,11 @@ bool_t timer_attachPWM(uint8_t timerNo, uint8_t prescale, uint16_t cycleCount, u
 }
 
 //timer_attachPWM()の簡易版。HzとDutyで指定 Hz:1～65536(0) Duty:0～32768
-//bUseSecondPin Timer0 Timer1 Timer2 Timer3 Timer4
-//   FALSEの場合  DIO10  DIO11  DIO12  DIO13  DIO17
-//   TRUEの場合   DIO4   DIO5   DIO6   DIO7   DIO8
-bool_t timer_attachPWMByHzDuty(uint8_t timerNo, uint16_t hz, uint16_t duty, bool_t bStartFromHi, bool_t bUseSecondPin, bool_t bStartNow) {
+//pinSelection       Timer0 Timer1 Timer2 Timer3 Timer4
+//  DEFAULT_PINの場合 DIO10  DIO11  DIO12  DIO13  DIO17
+//  SECOND_PINの場合  DIO4   DIO5   DIO6   DIO7   DIO8
+//  DO_PINの場合     (DIO4) (DIO5)  DO0    DO1   (DIO8)
+bool_t timer_attachPWMByHzDuty(uint8_t timerNo, uint16_t hz, uint16_t duty, bool_t bStartFromHi, TIMEROPINSELECTION pinSelection, bool_t bStartNow) {
     if (timerNo > 4 || duty > 32768) return FALSE;
 
     uint8_t prescale;
@@ -741,7 +569,7 @@ bool_t timer_attachPWMByHzDuty(uint8_t timerNo, uint16_t hz, uint16_t duty, bool
     } else {
         pulseCount = ((uint32_t)cycleCount * (uint32_t)duty) >> 15;
     }
-    return timer_attachPWM(timerNo, prescale, cycleCount, pulseCount, bStartFromHi, bUseSecondPin, bStartNow);
+    return timer_attachPWM(timerNo, prescale, cycleCount, pulseCount, bStartFromHi, pinSelection, bStartNow);
 }
 
 //PWMに設定可能なpulseCount上限値を返します
@@ -825,13 +653,14 @@ bool_t timer_attachCallbackByHz(uint8_t timerNo, uint16_t hz, bool_t bStartNow, 
 
 //疑似アナログ出力
 //timerNo=0..4, power=0..65536(0)
-//出力先DIO                   Timer0 Timer1 Timer2 Timer3 Timer4
-//bUseSecondPin=FALSEの場合  DIO10  DIO11  DIO12  DIO13  DIO17
-//bUseSecondPin=TRUEの場合   DIO4   DIO5   DIO6   DIO7   DIO8
-bool_t timer_attachAnalogWrite(uint8_t timerNo, uint16_t power, bool_t bUseSecondPin) {
+//pinSelection       Timer0 Timer1 Timer2 Timer3 Timer4
+//  DEFAULT_PINの場合 DIO10  DIO11  DIO12  DIO13  DIO17
+//  SECOND_PINの場合  DIO4   DIO5   DIO6   DIO7   DIO8
+//  DO_PINの場合     (DIO4) (DIO5)  DO0    DO1   (DIO8)
+bool_t timer_attachAnalogWrite(uint8_t timerNo, uint16_t power, TIMEROPINSELECTION pinSelection) {
     if (timerNo > 4) return FALSE;
 
-    vAHI_TimerSetLocation(timerNo, bUseSecondPin, FALSE);
+    vAHI_TimerSetLocation(timerNo, (pinSelection != DEFAULT_PIN), (pinSelection == DO_PIN));
 
     uint8_t b = 4 << timerNo;
     if ((timerFineGrainDIOControlValue & b) != 0) {
@@ -1033,65 +862,6 @@ bool_t timer0_attachCounter(uint8_t prescale, uint16_t count, bool_t bUseSecondP
  * シリアル
  */
 
-#if defined(USE_SERIAL) && defined(SERIAL_HW_FLOW_CONTROL)
-//キュー関数
-
-typedef struct {
-    uint8_t             *pau8Buff;
-    volatile uint16_t   u16BuffSize;
-    volatile uint16_t   u16DataSize;
-    volatile uint16_t   u16WriteIndex;
-    volatile uint16_t   u16ReadIndex;
-    volatile bool_t     bDataLost;
-   	volatile uint32_t   u32InterruptStore;
-} BYTEQUE;
-
-static void que_init(BYTEQUE *psQue, uint8_t *pau8Buff, uint16_t u16BuffSize) {
-    psQue->pau8Buff = pau8Buff;
-    psQue->u16BuffSize = u16BuffSize;
-    psQue->u16DataSize = 0;
-    psQue->u16WriteIndex = 0;
-    psQue->bDataLost = FALSE;
-    psQue->u16ReadIndex = 0;
-}
-/*
-#define que_disableInterrupts(que)      MICRO_DISABLE_AND_SAVE_INTERRUPTS((que)->u32InterruptStore)
-
-#define que_restoreInterrupts(que)      MICRO_RESTORE_INTERRUPTS((que)->u32InterruptStore)
-*/
-#define que_getCount(que)               ((que)->u16DataSize)
-
-#define que_bufferEmpty(que)            ((que)->u16DataSize == 0)
-
-#define que_bufferFull(que)             ((que)->u16DataSize == (que)->u16BuffSize)
-
-static bool_t que_dataLost(BYTEQUE *psQue) {
-    bool_t b = psQue->bDataLost;
-    psQue->bDataLost = FALSE;
-    return b;
-}
-
-static void que_append(BYTEQUE *psQue, uint8_t byte) {
-    if (psQue->u16DataSize < psQue->u16BuffSize) {
-        *(psQue->pau8Buff + psQue->u16WriteIndex) = byte;
-        if (++(psQue->u16WriteIndex) >= psQue->u16BuffSize) psQue->u16WriteIndex -= psQue->u16BuffSize;
-        psQue->u16DataSize++;
-    } else {
-        psQue->bDataLost = TRUE;
-    }
-}
-
-static int16_t que_get(BYTEQUE *psQue) {
-    if (psQue->u16DataSize == 0) return -1;
-
-    int8_t byte = *(psQue->pau8Buff + psQue->u16ReadIndex);
-    if (++(psQue->u16ReadIndex) >= psQue->u16BuffSize) psQue->u16ReadIndex -= psQue->u16BuffSize;
-    psQue->u16DataSize--;
-    return (int16_t)byte;
-}
-#endif //USE_SERIAL && SERIAL_HW_FLOW_CONTROL
-
-
 #ifdef USE_SERIAL
 //ここからシリアル0関数
 
@@ -1105,12 +875,13 @@ static uint8_t au8SerialRxBuffer0[SERIAL_RX_BUFFER_SIZE];   //ハードウェア
 //u8AHI_UartReadLineStatus()の値を保持
 uint8_t serial0StatusBit;
 
-#ifdef SERIAL_HW_FLOW_CONTROL
+//#ifdef SERIAL_HW_FLOW_CONTROL
 static uint8_t au8SerialRxBuffer0_internal[20]; //一次バッファ
 static BYTEQUE sSerialRxQue0;                   //二次バッファ管理用キュー
+static int8_t i8HwFCTimerNo;                    //ハードウェアフロー制御に使うタイマー番号。使わない場合は-1。ハードウェアフロー制御判定フラグにも使う
 
-void serial0UpdateRxBuffer();
-#endif
+static void serial0UpdateRxBuffer();
+//#endif
 
 
 //New serial_printf()
@@ -1125,7 +896,7 @@ bool_t serial_printf(const char *fmt, ...) {
     __printf_putc_init(buf, SERIAL_TX_BUFFER_SIZE);
 
     //bufにprintf
-    if (!__printf(__printf_putc, fmt, ap)) {
+    if (!myprintf(__printf_putc, fmt, ap)) {
         //バッファオーバーフロー
         va_end(ap);
         return FALSE;
@@ -1140,27 +911,19 @@ bool_t serial_printf(const char *fmt, ...) {
 //bUseSecondPin RXD   TXD   RTS   CTS
 //  FALSE       DIO7  DIO6  DIO5  DIO4
 //  TRUE        DIO15 DIO14 DIO13 DIO12
-//SERIAL_HW_FLOW_CONTROL未宣言時はRTS,CTSピンは使用しないため、DIOとして利用できます。
-bool_t serial_initEx(SERIALBAUD baudRate, SERIALPARITY parity, SERIALBITLENGTH bitLength, SERIALSTOPBIT stopBit, bool_t bUseSecondPin) {
+//ハードウェアフロー制御を行わない場合はRTS,CTSピンは汎用DIOとして使用できる
+bool_t serial_initEx(SERIALBAUD baudRate, SERIALPARITY parity, SERIALBITLENGTH bitLength, SERIALSTOPBIT stopBit, bool_t bUseSecondPin, SERIALHWFLOWCONTROL flowControl) {
+
+    i8HwFCTimerNo = (uint8_t)flowControl;
 
     vAHI_UartSetLocation(E_AHI_UART_0, bUseSecondPin);
-
-#ifdef SERIAL_HW_FLOW_CONTROL
-    vAHI_UartSetRTSCTS(E_AHI_UART_0, TRUE); //RTS,CTSピンを使う
-#else
-    vAHI_UartSetRTSCTS(E_AHI_UART_0, FALSE);
-#endif
+    vAHI_UartSetRTSCTS(E_AHI_UART_0, (i8HwFCTimerNo != -1)); //RTS,CTSピンを使う
 
     if (!bAHI_UartEnable(E_AHI_UART_0,
         au8SerialTxBuffer0,     //uint8 *pu8TxBufAd,
         SERIAL_TX_BUFFER_SIZE,  //uint16 u16TxBufLen,
-#ifdef SERIAL_HW_FLOW_CONTROL
-        au8SerialRxBuffer0_internal, //uint8 *pu8RxBufAd,
-        (uint16_t)20)                   //uint16 u16RxBufLen);
-#else
-        au8SerialRxBuffer0,             //uint8 *pu8RxBufAd,
-        SERIAL_RX_BUFFER_SIZE)          //uint16 u16RxBufLen);
-#endif
+        (i8HwFCTimerNo != -1) ? au8SerialRxBuffer0_internal : au8SerialRxBuffer0, //uint8 *pu8RxBufAd,
+        (i8HwFCTimerNo != -1) ? 20 : SERIAL_RX_BUFFER_SIZE)  //uint16 u16RxBufLen);
     ) return FALSE;
 
     u8AHI_UartReadLineStatus(E_AHI_UART_0); //clear
@@ -1177,76 +940,67 @@ bool_t serial_initEx(SERIALBAUD baudRate, SERIALPARITY parity, SERIALBITLENGTH b
 
     vAHI_UartSetAutoFlowCtrl(E_AHI_UART_0,
         E_AHI_UART_FIFO_ARTS_LEVEL_15,  //uint8 u8RxFifoLevel, 一次バッファが15バイトでRTSがHになる
-        FALSE,                  //bool_t bFlowCtrlPolarity,
-#ifdef SERIAL_HW_FLOW_CONTROL
-        TRUE,                   //bool_t bAutoRts,  受信制御自動
-        TRUE);                  //bool_t bAutoCts); 送信制御自動
-#else
-        FALSE,
-        FALSE);
-#endif
+        FALSE,                          //bool_t bFlowCtrlPolarity,
+        (i8HwFCTimerNo != -1),          //bool_t bAutoRts,  受信制御自動
+        (i8HwFCTimerNo != -1));         //bool_t bAutoCts); 送信制御自動
 
-#ifdef SERIAL_HW_FLOW_CONTROL
-    //二次バッファ用キューを初期化
-    que_init(&sSerialRxQue0, au8SerialRxBuffer0, SERIAL_RX_BUFFER_SIZE);
+    if (i8HwFCTimerNo != -1) {
+        //二次バッファ用キューを初期化
+        que_init(&sSerialRxQue0, au8SerialRxBuffer0, SERIAL_RX_BUFFER_SIZE);
 
-    //一次バッファ監視用にタイマー起動
-    timer_attachCallback(4, 4, 1000, serial0UpdateRxBuffer);  //1ms
-    timer_start(4);
-#endif
+        //一次バッファ監視用にタイマー起動
+        timer_attachCallback(i8HwFCTimerNo, 4, 1000, TRUE, serial0UpdateRxBuffer);  //1ms
+    }
 
     return TRUE;
 }
 
 void serial_disable() {
     vAHI_UartDisable(E_AHI_UART_0);
-#ifdef SERIAL_HW_FLOW_CONTROL
-    timer_detach(4);
-#endif
+    if (i8HwFCTimerNo != -1) timer_detach(i8HwFCTimerNo);
 }
 
-#ifdef SERIAL_HW_FLOW_CONTROL
 //フロー制御時に一次バッファから二次バッファにデータを移送
 //タイマーコールバック関数(遅延割り込み)も兼ねる
-void serial0UpdateRxBuffer() {
+static void serial0UpdateRxBuffer() {
     while (u16AHI_UartReadRxFifoLevel(E_AHI_UART_0) > 0 && !que_bufferFull(&sSerialRxQue0)) {
         que_append(&sSerialRxQue0, u8AHI_UartReadData(E_AHI_UART_0));
     }
 }
-#endif
 
 //シリアル0でバッファフルなどによる欠落が発生したか
 bool_t serial_dataLost() {
     serial0StatusBit |= u8AHI_UartReadLineStatus(E_AHI_UART_0); //フラグ合成
+
     bool_t b;
-#ifdef SERIAL_HW_FLOW_CONTROL
-    b = ((serial0StatusBit & E_AHI_UART_LS_OE) || que_dataLost(&sSerialRxQue0));
-#else
-    b = (serial0StatusBit & E_AHI_UART_LS_OE);
-#endif
+    if (i8HwFCTimerNo != -1) {
+        b = ((serial0StatusBit & E_AHI_UART_LS_OE) || que_dataLost(&sSerialRxQue0));
+    } else {
+        b = (serial0StatusBit & E_AHI_UART_LS_OE);
+    }
     serial0StatusBit &= (E_AHI_UART_LS_OE ^ 0xff);  //フラグクリア
     return b;
 }
 
 //シリアル0の受信バッファのデータ数を返す
 uint16_t serial_getRxCount() {
-#ifdef SERIAL_HW_FLOW_CONTROL
-    serial0UpdateRxBuffer(); //データがあれば読み込む
-    return que_getCount(&sSerialRxQue0);
-#else
-    return u16AHI_UartReadRxFifoLevel(E_AHI_UART_0);
-#endif
+    if (i8HwFCTimerNo != -1) {
+        serial0UpdateRxBuffer(); //データがあれば読み込む
+        return que_getCount(&sSerialRxQue0);
+    } else {
+        return u16AHI_UartReadRxFifoLevel(E_AHI_UART_0);
+    }
 }
 
 //シリアル0から1バイト読み出す。データが無い場合は-1を返す
 int16_t serial_getc() {
-#ifdef SERIAL_HW_FLOW_CONTROL
-    serial0UpdateRxBuffer();         //データがあれば読み込む
-    return que_get(&sSerialRxQue0); //無いときは-1を返す
-#else
-    if (u16AHI_UartReadRxFifoLevel(E_AHI_UART_0) == 0) return -1;
-    return (int16_t)u8AHI_UartReadData(E_AHI_UART_0);
-#endif
+    if (i8HwFCTimerNo != -1) {
+        serial0UpdateRxBuffer();        //データがあれば読み込む
+        return que_get(&sSerialRxQue0); //無いときは-1を返す
+    } else {
+        if (u16AHI_UartReadRxFifoLevel(E_AHI_UART_0) == 0) return -1;
+        return (int16_t)u8AHI_UartReadData(E_AHI_UART_0);
+    }
 }
 
 //シリアル0からバッファに読み込む。読み込み終了条件は以下の通り
@@ -1257,24 +1011,31 @@ int16_t serial_getc() {
 //関数はnull終端を含めない、読み込んだバイト数を返す。エラーの場合-1。
 int16_t serial_readUntil(uint8_t u8Terminate, uint8_t *pu8Buffer, uint16_t u16Length) {
     if (u16Length <= 1) return -1;
-#ifdef SERIAL_HW_FLOW_CONTROL
-    serial0UpdateRxBuffer(); //データがあれば読み込む
-#endif
+
+    if (i8HwFCTimerNo != -1) serial0UpdateRxBuffer(); //データがあれば読み込む
+
     int16_t len = 0;
     while (u16Length-- > 1) {
-#ifdef SERIAL_HW_FLOW_CONTROL
-        if (que_getCount(&sSerialRxQue0) == 0) break;
-        uint8_t c= que_get(&sSerialRxQue0);
-#else
-        if (u16AHI_UartReadRxFifoLevel(E_AHI_UART_0) == 0) break;
-        uint8_t c = u8AHI_UartReadData(E_AHI_UART_0);
-#endif
+        uint8_t c;
+        if (i8HwFCTimerNo != -1) {
+            if (que_getCount(&sSerialRxQue0) == 0) break;
+            c= que_get(&sSerialRxQue0);
+        } else {
+            if (u16AHI_UartReadRxFifoLevel(E_AHI_UART_0) == 0) break;
+            c = u8AHI_UartReadData(E_AHI_UART_0);
+        }
         *pu8Buffer++ = c;
         len++;
         if (c == u8Terminate) break;
     }
     *pu8Buffer = '\0';
     return len;
+}
+
+//送信可能かを返す。ハードウェアフロー制御を行わない場合は常にTRUEを返す
+bool_t serial_ready() {
+    if (i8HwFCTimerNo == -1) return TRUE;
+    return ((u8AHI_UartReadModemStatus(E_AHI_UART_0) & 0x10) ? TRUE : FALSE);
 }
 
 //シリアル0に書式文字列を書き出す。バッファがいっぱいの場合は書き出さずにFALSEを返す
@@ -1284,6 +1045,15 @@ int16_t serial_readUntil(uint8_t u8Terminate, uint8_t *pu8Buffer, uint16_t u16Le
     va_end(args);
     return serialx_puts(E_AHI_UART_0, SPRINTF_pu8GetBuff());
 }*/
+
+//シリアル0の受信バッファをクリアする
+void serial_resetRx() {
+    vAHI_UartReset(E_AHI_UART_0, FALSE, TRUE);
+
+    if (i8HwFCTimerNo != -1) {
+        que_clear(&sSerialRxQue0);
+    }
+}
 
 #endif //USE_SERIAL
 
@@ -1313,7 +1083,7 @@ bool_t serial1_printf(const char *fmt, ...) {
     __printf_putc_init(buf, SERIAL1_TX_BUFFER_SIZE);
 
     //bufにprintf
-    if (!__printf(__printf_putc, fmt, ap)) {
+    if (!myprintf(__printf_putc, fmt, ap)) {
         //バッファオーバーフロー
         va_end(ap);
         return FALSE;
@@ -1398,6 +1168,7 @@ int16_t serial1_readUntil(uint8_t u8Terminate, uint8_t *pu8Buffer, uint16_t u16L
     va_end(args);
     return serialx_puts(E_AHI_UART_1, SPRINTF_pu8GetBuff());
 }*/
+
 #endif //USE_SERIAL1
 
 
@@ -1422,9 +1193,9 @@ bool_t serialx_write(uint8_t serialNo, const uint8_t *pau8Data, uint16_t u16Leng
 }
 
 //シリアルに文字列を書き出す。バッファがいっぱいの場合は書き出さずにFALSEを返す
-/*bool_t serialx_puts(uint8_t serialNo, uint8_t *pau8String) {
-    return serialx_write(serialNo, pau8String, (uint16_t)strlen((const char *)pau8String));
-}*/
+bool_t serialx_puts(uint8_t serialNo, const char *pau8String) {
+    return serialx_write(serialNo, (const uint8_t *)pau8String, (uint16_t)strlen(pau8String));
+}
 
 #endif //USE_SERIAL || USE_SERIAL1
 
@@ -2453,6 +2224,21 @@ void spi_writeByte(int8_t slaveNo, uint8_t u8Command, uint8_t u8Data) {
     vAHI_SpiSelect(0);
 }
 
+void spi_write8(uint8_t u8Data) {
+    vAHI_SpiStartTransfer(7, u8Data);
+    while(bAHI_SpiPollBusy());
+}
+
+void spi_write16(uint16_t u16Data) {
+    vAHI_SpiStartTransfer(15, u16Data);
+    while(bAHI_SpiPollBusy());
+}
+
+void spi_write32(uint32_t u32Data) {
+    vAHI_SpiStartTransfer(31, u32Data);
+    while(bAHI_SpiPollBusy());
+}
+
 #endif //USE_SPI
 
 
@@ -2463,11 +2249,21 @@ void spi_writeByte(int8_t slaveNo, uint8_t u8Command, uint8_t u8Data) {
 
 #ifdef USE_RADIO
 
+/*
+ネットワーク層  暗号化  宛先    送信元   ペイロードの最大
+    なし       なし    ショート ショート    104     //u16MyShortAddress != 0xFFFF
+    なし       なし    ショート ロング      98      //u16MyShortAddress == 0xFFFF
+    なし       なし    ロング   ロング      92      //u16MyShortAddress == 0xFFFF
+*/
+
 //送信完了割り込みルーチンのポインタを保持
 static void (*radioTxCallbackFunction)(uint8_t, bool_t);
 
 //受信割り込みルーチンのポインタを保持
 static void (*radioRxCallbackFunction)(uint32_t, bool_t, uint8_t, uint8_t, uint8_t *, uint8_t, uint8_t);
+
+//受信重複判定のコールバック関数へのポインタを保持
+static bool_t (*radioRxDuplicateJudgementCallbackFunction)(uint32_t, uint8_t);
 
 //送信シーケンス番号を保持
 static uint8_t u8RadioSeqNo;
@@ -2480,6 +2276,23 @@ static uint8_t u8RadioRetryCount;
 
 //再送間隔
 static uint16_t u16RadioRetryDuration;
+
+//自分の12bitショートアドレス。未使用時 0xFFFF
+static uint16_t u16MyShortAddress;
+
+//送信IDを強制的に指定する。未使用時-1
+static int16_t i16RadioNextCbId;
+
+
+//重複受信回避用の構造体
+typedef struct {
+    uint32_t u32SrcAddr; //0:未使用
+    uint32_t u32Millis;
+    uint8_t u8seq;
+} RADIORECEIVEHISTORY;
+#define RADIORECEIVEHISTRY_BUFSIZE 5
+static RADIORECEIVEHISTORY radioReceiveHistory[RADIORECEIVEHISTRY_BUFSIZE];
+
 
 //setup()関数内で使用すること
 //有効な appid の範囲。0xHHHHLLLLの場合、HHHH,LLL共に0x0001～0x7FFF
@@ -2501,6 +2314,12 @@ bool_t radio_setupInit(RADIOMODE mode, uint32_t appid, uint8_t channel, uint8_t 
     return TRUE;
 }
 
+//アドレスは12ビット(0x000～0xFFF)です。
+void radio_setupShortAddress(uint16_t u16ShortAddress) {
+	sToCoNet_AppContext.u16ShortAddress = u16ShortAddress;
+    u16MyShortAddress = u16ShortAddress;
+}
+
 //ACKが得られない場合の再送信回数を設定 0..7。デフォルトは 2
 //ブロードキャスト送信の場合は常に u8Retry+1 回の送信が行われる
 //retryDurationは再送間隔(ミリ秒)。デフォルトは10ms
@@ -2511,7 +2330,12 @@ bool_t radio_setRetry(uint8_t retryCount, uint16_t retryDuration) {
     return TRUE;
 }
 
-//送信中のデータ数
+//次の送信関数実行時の送信IDを強制的に指定します
+void radio_setCbId(uint8_t u8CbId) {
+    i16RadioNextCbId = u8CbId;
+}
+
+//送信中のパケット数
 uint8_t radio_txCount() {
     return u8NumRadioTx;
 }
@@ -2521,46 +2345,76 @@ void radio_attachCallback(void (*txFunc)(uint8_t u8CbId, bool_t bSuccess), void 
     radioTxCallbackFunction = txFunc;
     radioRxCallbackFunction = rxFunc;
 }
-/*
-//無線送信完了割り込みルーチンを設定する
-void radio_attachTxCallback(void (*func)(uint8_t u8CbId, bool_t bSuccess)) {
-    radioTxCallbackFunction = func;
+
+//無線受信時の重複受信回避処理をユーザーコールバック関数に置き換える
+//ユーザーコールバック関数は受信を許可したときにTRUEを返す
+//ユーザーコールバック関数のポンタにNULLを渡したときはデフォルトの重複受信回避アルゴリズムが使用される
+void radio_setRxGateCallback(bool_t (*gateFunc)(uint32_t u32SrcAddr, uint8_t u8CbId)) {
+    radioRxDuplicateJudgementCallbackFunction = gateFunc;
 }
 
-#ifdef USE_RADIO
-//無線受信割り込みルーチンを設定する
-void radio_attachRxCallback(void (*func)(uint32_t u32SrcAddr, uint8_t u8CbId, uint8_t u8DataType, uint8_t *pu8Data, uint8_t u8Length, uint8_t u8Lqi)) {
-    radioRxCallbackFunction = func;
-}
-#endif
-*/
 
 //無線で特定の相手に送信する
 //basicio_module.hでUSE_RADIOを宣言し、送信モジュールと同じAPP_ID,CHANNELに設定したモジュールかつ、関数の引数でu32DistAddrに指定したモジュールが受信できる
 //u32DestAddr=相手のモジュールアドレス。事前にSerial0_printf("%u", moduleAddress)等を実行してTWELITE毎のモジュールアドレスを知っておくとよい
-//pu8Data=データ, u8Length=データ長さ(最大108バイト), u8DataType=データの簡易識別番号(0..7)
+//pu8Data=データ, u8Length=データ長さ, u8DataType=データの簡易識別番号(0..7)
 //簡易識別番号は受け取り側が何のデータか知るために使う。使用しない場合は値はなんでもよい
 //関数はエラーで-1、送信開始で8bitの送信Id(u8CbId)を返す。これは送信完了コールバックで送信データの識別に使用される。
 int16_t radio_write(uint32_t u32DestAddr, uint8_t u8DataType, uint8_t *pu8Data, uint8_t u8Length)
 {
-    if (u8Length > 108) return -1;
+    uint8_t maxDataLength;
+    if (u16MyShortAddress == 0xFFFF) {
+        //ロングアドレスモード
+        if ((u32DestAddr & 0xffff0000) == 0) {
+            //⇒ショートアドレス
+            maxDataLength = 98;
+        } else {
+            //⇒ロングアドレス
+            maxDataLength = 92;
+        }
+    } else {
+        //ショートアドレスモード
+        if ((u32DestAddr & 0xffff0000) == 0) {
+            //⇒ショートアドレス
+            maxDataLength = 104;
+        } else {
+            //⇒ロングアドレス
+            return -1;  //自分がショートアドレスの時、ロングアドレスには送信できない
+        }
+    }
+    if (u8Length > maxDataLength) return -1;
 
     u8RadioSeqNo++;
+
+    if (i16RadioNextCbId != -1 && i16RadioNextCbId == (u8RadioSeqNo + 1)) {
+        //送信IDを強制指定しているときで、次回の送信時の自動生成送信ID(u8RadioSeqNo)と値がダブる場合、
+        //次回の送信が相手先で拒否される可能性があるので、ダブらないように値をずらす
+        u8RadioSeqNo++;
+    }
 
     tsTxDataApp tsTx;
     memset(&tsTx, 0, sizeof(tsTxDataApp));
 
-    tsTx.u32SrcAddr = getModuleAddress();           //送信元アドレス
+    tsTx.u32SrcAddr = (u16MyShortAddress == 0xFFFF) ? getModuleAddress() : u16MyShortAddress; //送信元アドレス
     tsTx.u32DstAddr = u32DestAddr;                  //送信先アドレス
 
 	tsTx.u8Cmd = u8DataType;                        //データ種別 (0..7)。データの簡易識別子。
-	tsTx.u8Seq = u8RadioSeqNo; 		                //シーケンス番号(複数回送信時に、この番号を調べて重複受信を避ける)
 	tsTx.u8Len = u8Length; 		                    //データ長
-	tsTx.u8CbId = u8RadioSeqNo;	                    //送信識別ID。送信完了イベントの引数として渡され、送信イベントとの整合を取るために使用する
+
+    if (i16RadioNextCbId == -1) {
+    	tsTx.u8Seq = u8RadioSeqNo; 		            //シーケンス番号(複数回送信時に、この番号を調べて重複受信を避ける)
+	    tsTx.u8CbId = u8RadioSeqNo;	                //送信識別ID。送信完了イベントの引数として渡され、送信イベントとの整合を取るために使用する
+        //受信側ではu8CbIdを受け取れないので、u8Seqと同じ値を用いる
+    }
+    else {
+    	tsTx.u8CbId = (uint8_t)i16RadioNextCbId;    //送信IDを強制指定
+    	tsTx.u8Seq = (uint8_t)i16RadioNextCbId;     //
+        i16RadioNextCbId = -1;
+    }
     memcpy(tsTx.auData, pu8Data, u8Length);
 
 	tsTx.bAckReq = (u32DestAddr != TOCONET_MAC_ADDR_BROADCAST); //TRUE Ack付き送信を行う
-	tsTx.u8Retry = u8RadioRetryCount | 0x80;  		//MACによるAck付き送信失敗時に、さらに再送する場合(ToCoNet再送)の再送回数
+	tsTx.u8Retry = u8RadioRetryCount;  		        //MACによるAck付き送信失敗時に、さらに再送する場合(ToCoNet再送)の再送回数
 
 	//tsTx.u16ExtPan = 0;                           //0:外部PANへの送信ではない 1..0x0FFF: 外部PANへの送信 (上位4bitはリザーブ)
 
@@ -2588,7 +2442,6 @@ int16_t radio_write(uint32_t u32DestAddr, uint8_t u8DataType, uint8_t *pu8Data, 
 int16_t radio_puts(uint32_t u32DestAddr, uint8_t u8DataType, const char *pu8String)
 {
     uint32_t len = (uint32_t)strlen(pu8String);
-    if (len > 108) return -1;
     return radio_write(u32DestAddr, u8DataType, (uint8_t *)pu8String, (uint8_t)len);
 }
 
@@ -2601,21 +2454,21 @@ int16_t radio_puts(uint32_t u32DestAddr, uint8_t u8DataType, const char *pu8Stri
 }*/
 
 //New radio_printf()
-//出力できなかった場合は１文字も出力せずにFALSEを返します
-bool_t radio_printf(uint32_t u32DestAddr, uint8_t u8DataType, const char* fmt, ...) {
+//出力できなかった場合は１文字も出力せずに-1を返します
+int16_t radio_printf(uint32_t u32DestAddr, uint8_t u8DataType, const char* fmt, ...) {
     //パラメータを取得
     va_list ap;
     va_start(ap, fmt);
 
     //バッファへの書き込みパラメータを設定
-    char buf[108];
-    __printf_putc_init(buf, 108);
+    char buf[104];
+    __printf_putc_init(buf, 104);
 
     //bufにprintf
-    if (!__printf(__printf_putc, fmt, ap)) {
+    if (!myprintf(__printf_putc, fmt, ap)) {
         //バッファオーバーフロー
         va_end(ap);
-        return FALSE;
+        return -1;
     }
     va_end(ap);
 
@@ -2749,9 +2602,6 @@ static void vProcessEvCore(tsEvent *pEv, teEvent eEvent, uint32_t u32evarg)
 #ifdef USE_PBUTIL
         pb_update();    //プッシュボタンの状態を更新
 #endif
-#ifdef USE_LEDUTIL
-        led_update();   //LEDの状態を更新
-#endif
         loop(EVENT_TICK_TIMER);
         break;
     case E_EVENT_TICK_SECOND:
@@ -2759,12 +2609,6 @@ static void vProcessEvCore(tsEvent *pEv, teEvent eEvent, uint32_t u32evarg)
         break;
     }
 }
-
-#ifdef USE_RADIO
-static uint32_t u32SrcAddrPrev;
-static uint32_t u32MillisPrev;
-static uint8_t u8seqPrev;
-#endif
 
 //変数や構造体を初期化
 void resetVars()
@@ -2775,12 +2619,6 @@ void resetVars()
     u32PBPressed = 0;
     u32PBReleased = 0;
     memset(u8PBDelayCount, 0, sizeof(u8PBDelayCount));
-#endif
-
-#ifdef USE_LEDUTIL
-    memset(ledInformations, 255, sizeof(ledInformations));
-    u8LedIdGen = 1;
-    memset(ledPatterns, 0, sizeof(ledPatterns));
 #endif
 
 #ifdef USE_DIO
@@ -2834,10 +2672,10 @@ void resetVars()
     u8NumRadioTx = 0;
     u8RadioRetryCount = 2;
     u16RadioRetryDuration = 10;
-
-    u32SrcAddrPrev = 0;
-    u32MillisPrev = 0;
-    u8seqPrev = 255;
+    u16MyShortAddress = 0xFFFF;
+    i16RadioNextCbId = -1;
+    memset(radioReceiveHistory, 0, sizeof(radioReceiveHistory));
+    radioRxDuplicateJudgementCallbackFunction = NULL;
 #endif
 
     millisValue = 0;
@@ -3071,15 +2909,58 @@ void cbToCoNet_vNwkEvent(teEvent eEvent, uint32_t u32arg)
 void cbToCoNet_vRxEvent(tsRxDataApp *pRx)
 {
 #ifdef USE_RADIO
+#define RADIO_CBID_LIFESPAN 200 //[ms] 最大リトライを考えると200くらい必要
 
-    // 前回と同一の送信元＋シーケンス番号かつ、100ms未満のパケットなら無視
-    // 時間を考慮したのは、送信側がRAM OFFでスリープから起きると、常にu8Seqが1になってしまうため、うまく受信できない
-    if (pRx->u32SrcAddr == u32SrcAddrPrev && pRx->u8Seq == u8seqPrev) {
-        if (u32MillisPrev != 0 && (millis() - u32MillisPrev) < 100) return;
+    if (radioRxDuplicateJudgementCallbackFunction != NULL) {
+        //ユーザーによる重複受信回避処理
+        if (!(*radioRxDuplicateJudgementCallbackFunction)(pRx->u32SrcAddr, pRx->u8Seq)) return;
     }
-    u32SrcAddrPrev = pRx->u32SrcAddr;
-    u32MillisPrev = millis();
-    u8seqPrev = pRx->u8Seq;
+    else {
+        //デフォルトの重複受信回避処理
+
+        //100ms以内に受信した送信元アドレスと送信IDを5つまで保持し
+        //重複受信を回避している
+
+        uint32_t oldestTimePassed = 0;  //RADIO_ID_TIME_LIMIT以内で最も古い履歴の経過時間
+        int8_t oldestIndex = -1;        //RADIO_ID_TIME_LIMIT以内で最も古い履歴のインデックス
+        int8_t emptyIndex = -1;         //空データのインデックス
+        uint8_t i;
+        for (i=0; i<RADIORECEIVEHISTRY_BUFSIZE; i++) {
+            if (radioReceiveHistory[i].u32SrcAddr != 0) {
+                uint32_t timePassed = millis() - radioReceiveHistory[i].u32Millis;
+                if (timePassed > RADIO_CBID_LIFESPAN) {
+                    //一定時間経過した履歴は無効、削除する
+                    radioReceiveHistory[i].u32SrcAddr = 0;
+                    emptyIndex = i;
+                }
+                else if (radioReceiveHistory[i].u32SrcAddr == pRx->u32SrcAddr &&
+                    radioReceiveHistory[i].u8seq == pRx->u8Seq) {
+                    //このパケットは受信済み
+
+                    //受信時刻を更新する
+                    radioReceiveHistory[i].u32Millis = millis();
+                    return;
+                }
+                else if (timePassed > oldestTimePassed) {
+                    //有効な履歴
+
+                    //そのなかでも古い履歴なので記憶
+                    oldestTimePassed = timePassed;
+                    oldestIndex = i;
+                }
+            } else {
+                //配列は使用されていない
+                emptyIndex = i;
+            }
+        }
+
+        //空があればそこに履歴を書き込むが、そうでない場合は
+        //最も古い履歴に上書き更新する。
+        i = (emptyIndex >= 0) ? emptyIndex : oldestIndex;
+        radioReceiveHistory[i].u32SrcAddr = pRx->u32SrcAddr;
+        radioReceiveHistory[i].u32Millis = millis();
+        radioReceiveHistory[i].u8seq = pRx->u8Seq;
+    }
 
     if (radioRxCallbackFunction != NULL) {
         //受信ルーチンを呼び出す
@@ -3441,8 +3322,6 @@ void cbToCoNet_vMain(void)
 
 
 
-#ifdef USE_PRINTF
-
 //下記をベースにTWELITE使用に改造しました。感謝！
 //http://blog.livedoor.jp/hiroumauma/archives/1676244.html
 
@@ -3464,7 +3343,7 @@ static bool_t put_integerB(bool_t (*__putc)(char), uint64_t n, int32_t length, u
 
 //__putc()がFALSEを返したときに__printf()もFALSEを返す
 //末尾の'\0'は書き込まない
-static bool_t __printf(bool_t (*__putc)(char), const char *fmt, va_list ap) {
+bool_t myprintf(bool_t (*__putc)(char), const char *fmt, va_list ap) {
     //va_list ap;
     //va_start(ap, fmt);
 
@@ -3837,4 +3716,3 @@ static bool_t put_integerB(bool_t (*__putc)(char), uint64_t n, int32_t length, u
     }
     return TRUE;
 }
-#endif //USE_PRINTF

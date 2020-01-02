@@ -1,7 +1,7 @@
 /*
  * basicio.h
- * バージョン 2.00
- * 2019/11/12 by totsucom
+ * バージョン 3.0
+ * 2020/1/2 totsucom
  */
 
 
@@ -36,18 +36,11 @@
 //#define SB_BUFFER_SIZE  128       //sb_XXX()で使用するバッファサイズを指定します。(規定値: 128）
                                     //終端'\0'のため、実際には SB_BUFFER_SIZE+1 のバッファが確保されます
 
-
-/* LED補助関数 オプション */
-//#define MAX_LED         2         //使用するLEDの最大数を指定します。
-//#define MAX_LED_PATTERN 4         //LEDに付加する効果の最大数を指定します。使用するLEDが増えるとその分増やすこと。
-
-
 /* デジタルIO オプション */
 //#define MAX_DIO_INTERRUPT_FUNCS 5 //DIO割り込みルーチンが登録できる最大数。1～20(規定値:5)
 
 
 /* シリアル0 オプション */
-//#define SERIAL_HW_FLOW_CONTROL   //シリアル0にハードウェアフロー制御(CTS,RTS)を使用する(内部的にTimer4を使用)
 //#define SERIAL_TX_BUFFER_SIZE 96 //送信バッファの大きさ。16～2047(規定値:96)
 //#define SERIAL_RX_BUFFER_SIZE 32 //受信バッファの大きさ。16～2047(規定値:32)
 
@@ -69,7 +62,7 @@
 //パケット分割を行うような一度に多くのパケットを連続的に送信する場合はBIGを指定します。
 //１ヶあたり約128バイトのメモリを消費し、未定義時は MID となります。
 //#define ToCoNet_USE_MOD_TXRXQUEUE_SMALL
-//#define ToCoNet_USE_MOD_TXRXQUEUE_MID //デフォ
+#define ToCoNet_USE_MOD_TXRXQUEUE_MID //デフォ
 //#define ToCoNet_USE_MOD_TXRXQUEUE_BIG
 
 
