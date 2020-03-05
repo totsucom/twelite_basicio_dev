@@ -1,14 +1,14 @@
 /*
  * basicio.h
- * バージョン 3.0
- * 2020/1/2 totsucom
+ * バージョン 3.1
+ * 2020/3/5 totsucom
  */
 
 #ifndef __BASICIO_H
 #define __BASICIO_H
 
 #define BASICIO_MAJOR_VER   3
-#define BASICIO_MINOR_VER   0
+#define BASICIO_MINOR_VER   1
 
 
 #include "AppHardwareApi.h"
@@ -320,11 +320,12 @@ extern bool_t dio_setWake(uint8_t pinNo, INTERRUPTIONEDGES mode);
 #ifdef USE_TIMER
 
 typedef struct {
-    uint8_t u8Mode;         //用途 0:DIO 1:Timer 2:PWM 3:AnalogOut 4:MicroCounter 5:Capture(for Timer0) 6:Counter(for Timer0) 7:ADC sampling(DMA)
+    uint8_t u8Mode;         //用途 0:DIO 1:Timer 2:PWM 3:AnalogOut 4:MicroCounter 5:Capture(for Timer0) 6:Counter(for Timer0) 7:ADC sampling(DMA) 8:PWM(Sync)
     bool_t bStartFromHi;    //for PWM
     uint16_t u16HiCount;    //count from start till signal change for Timer/PWM/MicroCounter
     uint16_t u16LoCount;    //count from start till end of cycle for Timer/PWM/MicroCounter
     volatile uint16_t u16HiMicroSeconds; //for MicroCounter
+    uint16_t u16ReservedHiCount; //for PWM(Sync)
 } tsTimerContext2;
 
 extern tsTimerContext2 sTimerApp[5];
@@ -338,8 +339,8 @@ typedef enum {
     DO_PIN = 2          //Timer2,3専用
 } TIMEROPINSELECTION;
 
-extern bool_t timer_attachPWM(uint8_t timerNo, uint8_t prescale, uint16_t cycleCount, uint16_t pulseCount, bool_t bStartFromLo, TIMEROPINSELECTION pinSelection, bool_t bStartNow);
-extern bool_t timer_attachPWMByHzDuty(uint8_t timerNo, uint16_t hz, uint16_t duty, bool_t bStartFromHi, TIMEROPINSELECTION pinSelection, bool_t bStartNow);
+extern bool_t timer_attachPWM(uint8_t timerNo, uint8_t prescale, uint16_t cycleCount, uint16_t pulseCount, bool_t bStartFromLo, TIMEROPINSELECTION pinSelection, bool_t bSyncUpdate, bool_t bStartNow);
+extern bool_t timer_attachPWMByHzDuty(uint8_t timerNo, uint16_t hz, uint16_t duty, bool_t bStartFromHi, TIMEROPINSELECTION pinSelection, bool_t bSyncUpdate, bool_t bStartNow);
 
 extern int32_t timer_getPWMPulseCountULimit(uint8_t timerNo);
 extern bool_t timer_updatePWM(uint8_t timerNo, uint16_t pulseCount);

@@ -1,91 +1,21 @@
 ******************
- Ver.3.0への変更点
+ Ver.3.1への変更点
 ******************
-
-WIRELESS SERIALの開発に伴い、より柔軟なコードが書けるようにした。
 
 1.バージョン定数
  + BASICIO_MAJOR_VER = 3
- + BASICIO_MINOR_VER = 0
+ + BASICIO_MINOR_VER = 1
 
-2.シリアル0の初期化
-シリアル0 のハードウェアフロー制御はこれまで定数による宣言で有効にしていた。
-これをソフトウェアで初期化できるようにし、使用するタイマーも選択できるようにした。
- + SERIAL_HW_FLOW_CONTROL 定数の廃止
- + serial_initEx() のパラメータを変更
-
-3.無線通信のショートアドレス対応
-これまで無線送信先はブロードキャストまたは getModuleAddress() で取得できる、固有のモジュールアドレスに送信する
-ことしかできなかったが、setup() 内で自分の12ビットショートアドレスを割り当てられるようにした。
-これによりハードウェア（モジュール）を意識する必要が無くなった。
- + void radio_setupShortAddress() を追加
-
-4.デジタル出力ピンのサポート
-DO0, DO1への出力関数を準備した。これでモノスティックの黄色LEDにアクセスできる
- + do_enable() を追加
- + do_write() を追加
-
-これに伴い、タイマー2,3のPWM,DAC出力もDO0,DO1に変更できるようにした。
- + timer_attachPWM() のパラメータを変更
- + timer_attachPWMByHzDuty() のパラメータを変更
- + timer_attachAnalogWrite() のパラメータを変更
-
-5.無線通信のパケット制御の方法を提供
-これまで内部処理していた、送信ID設定と重複受信回避のアルゴリズムを必要に応じて変更できるようにした。
- + void radio_setCbId(uint8_t u8CbId) を追加
- + void radio_setRxGateCallback(bool_t (*gateFunc)(uint32_t u32SrcAddr, uint8_t u8CbId)) を追加
-
-6.シリアル通信の関数の変更
- + serial_resetTx(), serial1_resetTx() 送信バッファのクリア関数を追加
- + serial_resetRx(), serial1_resetRx() 受信バッファのクリア関数を追加
- + serial_init(), serial1_init() のパラメータを簡素化
-
-7.シリアル関数で内部使用していた que_ 関数群を使用できるように表に出した（無所属）
-バイト単位のキューバッファを提供する
-
-8.独自のprintf()関数を作成できるように、myprintf() 関数をユーザーから使用できるようにした
-USE_PRINTF の宣言で使用可能に
-
-9.SPIに低レベル入出力関数を追加
- + spi_select(), spi_deselect()
- + spi_write8(), spi_write16(), spi_write32()
- + spi_read8(), spi_read16(), spi_read32()
-
-10.rand()の名称がC標準関数とダブるのでrandom()に変更
-
-11.v2.0で追加したled_XXX関数群を削除
-使えないのでやめた
-
-12.バグフィックス
- + 無線送信関数のパケットサイズを108バイトとしていたが、マニュアルに依ればアドレスモードにより可変であることがわかったため、
- 　送信関数で動的に判断することにした。リファレンスでも上限値を説明しています。
- + 無線送信リトライ回数が、成功の有無にかかわらず常に再送するようになっていたので廃止
- + radio_printf() v2.0 の返り値の型間違いを修正 bool_t → int16_t
- + コンパイルのワーニングメッセージ関連のコード修正
+2.PWMパルス幅の変更品質を改善
+timer_attachPWM() と timer_attachPWMByHzDuty() に bSyncUpdate パラメータを追加した。これをTRUEにすることで
+timer_updatePWM() と timer_updatePWMDuty() によるパルス幅の変更が即座に行われず、PWMシグナルの周期の終了
+タイミングを待って更新されるようになり、サーボモータなどのシビアな制御でも安定して動作できるようにした。
 
 
 ********************************************
- 互換性、v2.0 のソースコードを v3.0 で使うには
+ 互換性、v3.0 のソースコードを v3.1 で使うには
 ********************************************
 
-ざっくりですが、以下のように変更。
-
-1. serial_init() はデフォルトでデフォルトピンを使うようにパラメータを省略しました。
-serial_init(SERIAL_BAUD_115200, FALSE)
-=> serial_init(SERIAL_BAUD_115200)
-セカンドピンを使用していた場合は、serial_initEx() を使用してください。
-
-2. serial_initEx() はハードウェアフロー制御用パラメータを追加しました。
-basicio.h 内の SERIALHWFLOWCONTROL 列挙型を参照してください。
-
-3. timer_attachPWM(), timer_attachPWMByHzDuty(), timer_attachAnalogWrite() の変更はコンパイルエラーにならないため、
-注意してください。
-timer_attachPWM(), timer_attachPWMByHzDuty() は後ろから２つ目のパラメータが、
-timer_attachAnalogWrite() は最後のパラメータが、
-bool_t 型から TIMEROPINSELECTION 列挙型に変わりました。
-FALSE => DEFAULT_PIN または、TRUE => SECOND_PIN に置き換えてください。
-
-4. rand() 関数は名称を変更しました。=> random()
-
-5. radio_printf() の返り値をチェックしている場合は、返り値の内容に間違いがあったので、リファレンスマニュアルで確認してください。
+1. timer_attachPWM() または timer_attachPWMByHzDuty() を使用している場合、末尾の bStartNow パラメータの前に、
+bSyncUpdate フラグを挿入する。これまでと互換性を保つ場合は bSyncUpdate=FALSE とする。
 

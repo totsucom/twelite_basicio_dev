@@ -1,7 +1,7 @@
 /*
  * basicio.h
- * バージョン 3.0
- * 2020/1/2 totsucom
+ * バージョン 3.1
+ * 2020/3/5 totsucom
  */
 
 #include "basicio.h"
@@ -518,7 +518,9 @@ bool_t timer_start(uint8_t timerNo) {
 //  DEFAULT_PINの場合 DIO10  DIO11  DIO12  DIO13  DIO17
 //  SECOND_PINの場合  DIO4   DIO5   DIO6   DIO7   DIO8
 //  DO_PINの場合     (DIO4) (DIO5)  DO0    DO1   (DIO8)
-bool_t timer_attachPWM(uint8_t timerNo, uint8_t prescale, uint16_t cycleCount, uint16_t pulseCount, bool_t bStartFromHi, TIMEROPINSELECTION pinSelection, bool_t bStartNow) {
+//bSyncUpdate: TRUEの場合、timer_updatePWM(),timer_updatePWMDuty()でタイミングをとってパルスカウントを変更する
+bool_t timer_attachPWM(uint8_t timerNo, uint8_t prescale, uint16_t cycleCount, uint16_t pulseCount, bool_t bStartFromHi,
+                        TIMEROPINSELECTION pinSelection, bool_t bSyncUpdate, bool_t bStartNow) {
     if (timerNo > 4) return FALSE;
     if (cycleCount != 0 && pulseCount > cycleCount) return FALSE;
 
@@ -534,14 +536,14 @@ bool_t timer_attachPWM(uint8_t timerNo, uint8_t prescale, uint16_t cycleCount, u
     vAHI_TimerEnable(timerNo,
         prescale,
         FALSE, //bool_t bIntRiseEnable, 
-        FALSE, //bool_t bIntPeriodEnable, 
+        bSyncUpdate, //bool_t bIntPeriodEnable,     //v3.1 同期更新のために割り込みを発生させる
         TRUE);//bool_t bOutputEnable);
 
     vAHI_TimerConfigureOutputs(timerNo,
         bStartFromHi, //TRUE:出力反転
         TRUE); //disable clock gation input
 
-    sTimerApp[timerNo].u8Mode = 2; //PWM    
+    sTimerApp[timerNo].u8Mode = bSyncUpdate ? 8 : 2; //PWM(Sync) または PWM    
     sTimerApp[timerNo].bStartFromHi = bStartFromHi;
     sTimerApp[timerNo].u16HiCount = bStartFromHi ? pulseCount : cycleCount - pulseCount; //開始から変化までのカウント
     sTimerApp[timerNo].u16LoCount = cycleCount;             //開始から終了までのカウント=サイクル
@@ -556,7 +558,9 @@ bool_t timer_attachPWM(uint8_t timerNo, uint8_t prescale, uint16_t cycleCount, u
 //  DEFAULT_PINの場合 DIO10  DIO11  DIO12  DIO13  DIO17
 //  SECOND_PINの場合  DIO4   DIO5   DIO6   DIO7   DIO8
 //  DO_PINの場合     (DIO4) (DIO5)  DO0    DO1   (DIO8)
-bool_t timer_attachPWMByHzDuty(uint8_t timerNo, uint16_t hz, uint16_t duty, bool_t bStartFromHi, TIMEROPINSELECTION pinSelection, bool_t bStartNow) {
+//bSyncUpdate: TRUEの場合、timer_updatePWM(),timer_updatePWMDuty()でタイミングをとってパルスカウントを変更する
+bool_t timer_attachPWMByHzDuty(uint8_t timerNo, uint16_t hz, uint16_t duty, bool_t bStartFromHi,
+                                TIMEROPINSELECTION pinSelection, bool_t bSyncUpdate, bool_t bStartNow) {
     if (timerNo > 4 || duty > 32768) return FALSE;
 
     uint8_t prescale;
@@ -569,13 +573,13 @@ bool_t timer_attachPWMByHzDuty(uint8_t timerNo, uint16_t hz, uint16_t duty, bool
     } else {
         pulseCount = ((uint32_t)cycleCount * (uint32_t)duty) >> 15;
     }
-    return timer_attachPWM(timerNo, prescale, cycleCount, pulseCount, bStartFromHi, pinSelection, bStartNow);
+    return timer_attachPWM(timerNo, prescale, cycleCount, pulseCount, bStartFromHi, pinSelection, bSyncUpdate, bStartNow);
 }
 
 //PWMに設定可能なpulseCount上限値を返します
 int32_t timer_getPWMPulseCountULimit(uint8_t timerNo) {
     if (timerNo > 4) return -1;
-    if (sTimerApp[timerNo].u8Mode != 2) return -1; //not PWM
+    if (sTimerApp[timerNo].u8Mode != 2 && sTimerApp[timerNo].u8Mode != 8) return -1; //not PWM
     if (sTimerApp[timerNo].u16LoCount == 0) {
         return 65535;
     } else{
@@ -586,21 +590,27 @@ int32_t timer_getPWMPulseCountULimit(uint8_t timerNo) {
 //PWMのデューティー比を変更するためにパルスカウントを再設定する
 bool_t timer_updatePWM(uint8_t timerNo, uint16_t pulseCount) {
     if (timerNo > 4) return FALSE;
-    if (sTimerApp[timerNo].u8Mode != 2) return FALSE; //not PWM
+    if (sTimerApp[timerNo].u8Mode != 2 && sTimerApp[timerNo].u8Mode != 8) return FALSE; //not PWM
 
     uint16_t cycleCount = sTimerApp[timerNo].u16LoCount;
     if (cycleCount != 0 && pulseCount > cycleCount) return FALSE;
 
-    //if (midCount == 0 || midCount >= sTimerApp[timerNo].u16LoCount) return FALSE;
-    sTimerApp[timerNo].u16HiCount = sTimerApp[timerNo].bStartFromHi ? pulseCount : cycleCount - pulseCount; //開始から変化までのカウント
-    vAHI_TimerStartRepeat(timerNo, sTimerApp[timerNo].u16HiCount, cycleCount);
+    if (sTimerApp[timerNo].u8Mode == 2) {
+        //値を変更
+        sTimerApp[timerNo].u16HiCount = sTimerApp[timerNo].bStartFromHi ? pulseCount : cycleCount - pulseCount; //開始から変化までのカウント
+        vAHI_TimerStartRepeat(timerNo, sTimerApp[timerNo].u16HiCount, cycleCount);
+    } else {
+        //同期の場合は割り込みで変更を行うので、ここでは保存のみ
+        sTimerApp[timerNo].u16ReservedHiCount = sTimerApp[timerNo].bStartFromHi ? pulseCount : cycleCount - pulseCount; //開始から変化までのカウント
+    }
+
     return TRUE;
 }
 
 //timer_updatePWM()の簡易版。Duty:0～32768
 bool_t timer_updatePWMDuty(uint8_t timerNo, uint16_t duty) {
     if (timerNo > 4 || duty > 32768) return FALSE;
-    if (sTimerApp[timerNo].u8Mode != 2) return FALSE; //not PWM
+    if (sTimerApp[timerNo].u8Mode != 2 && sTimerApp[timerNo].u8Mode != 8) return FALSE; //not PWM
 
     uint16_t cycleCount = sTimerApp[timerNo].u16LoCount;
     uint16_t pulseCount;
@@ -609,8 +619,16 @@ bool_t timer_updatePWMDuty(uint8_t timerNo, uint16_t duty) {
     } else {
         pulseCount = ((uint32_t)cycleCount * (uint32_t)duty) >> 15;
     }
-    sTimerApp[timerNo].u16HiCount = sTimerApp[timerNo].bStartFromHi ? pulseCount : cycleCount - pulseCount; //開始から変化までのカウント
-    vAHI_TimerStartRepeat(timerNo, sTimerApp[timerNo].u16HiCount, cycleCount);
+    
+    if (sTimerApp[timerNo].u8Mode == 2) {
+        //値を変更
+        sTimerApp[timerNo].u16HiCount = sTimerApp[timerNo].bStartFromHi ? pulseCount : cycleCount - pulseCount; //開始から変化までのカウント
+        vAHI_TimerStartRepeat(timerNo, sTimerApp[timerNo].u16HiCount, cycleCount);
+    } else {
+        //同期の場合は割り込みで変更を行うので、ここでは保存のみ
+        sTimerApp[timerNo].u16ReservedHiCount = sTimerApp[timerNo].bStartFromHi ? pulseCount : cycleCount - pulseCount; //開始から変化までのカウント
+    }
+
     return TRUE;
 }
 
@@ -3180,11 +3198,22 @@ uint8_t cbToCoNet_u8HwInt(uint32_t u32DeviceId, uint32_t u32ItemBitmap)
             }
             return TRUE;
         }
+        else if (sTimerApp[0].u8Mode == 8 && sTimerApp[0].u16HiCount != sTimerApp[0].u16ReservedHiCount) {
+            //PWM0パルスカウンタの同期変更
+            sTimerApp[0].u16HiCount = sTimerApp[0].u16ReservedHiCount;
+            vAHI_TimerStartRepeat(0, sTimerApp[0].u16HiCount, sTimerApp[0].u16LoCount);
+            return TRUE;
+        }
         break;
 
     case E_AHI_DEVICE_TIMER1:
         if (sTimerApp[1].u8Mode == 4) {         //Micro counter    
             sTimerApp[1].u16HiMicroSeconds++;
+            return TRUE;
+        } else if (sTimerApp[1].u8Mode == 8 && sTimerApp[1].u16HiCount != sTimerApp[1].u16ReservedHiCount) {
+            //PWM1パルスカウンタの同期変更
+            sTimerApp[1].u16HiCount = sTimerApp[1].u16ReservedHiCount;
+            vAHI_TimerStartRepeat(1, sTimerApp[1].u16HiCount, sTimerApp[1].u16LoCount);
             return TRUE;
         }
         break;
@@ -3193,6 +3222,11 @@ uint8_t cbToCoNet_u8HwInt(uint32_t u32DeviceId, uint32_t u32ItemBitmap)
         if (sTimerApp[2].u8Mode == 4) {         //Micro counter    
             sTimerApp[2].u16HiMicroSeconds++;
             return TRUE;
+        } else if (sTimerApp[2].u8Mode == 8 && sTimerApp[2].u16HiCount != sTimerApp[2].u16ReservedHiCount) {
+            //PWM2パルスカウンタの同期変更
+            sTimerApp[2].u16HiCount = sTimerApp[2].u16ReservedHiCount;
+            vAHI_TimerStartRepeat(2, sTimerApp[2].u16HiCount, sTimerApp[2].u16LoCount);
+            return TRUE;
         }
         break;
 
@@ -3200,12 +3234,22 @@ uint8_t cbToCoNet_u8HwInt(uint32_t u32DeviceId, uint32_t u32ItemBitmap)
         if (sTimerApp[3].u8Mode == 4) {         //Micro counter    
             sTimerApp[3].u16HiMicroSeconds++;
             return TRUE;
+        } else if (sTimerApp[3].u8Mode == 8 && sTimerApp[3].u16HiCount != sTimerApp[3].u16ReservedHiCount) {
+            //PWM3パルスカウンタの同期変更
+            sTimerApp[3].u16HiCount = sTimerApp[3].u16ReservedHiCount;
+            vAHI_TimerStartRepeat(3, sTimerApp[3].u16HiCount, sTimerApp[3].u16LoCount);
+            return TRUE;
         }
         break;
 
     case E_AHI_DEVICE_TIMER4:
         if (sTimerApp[4].u8Mode == 4) {         //Micro counter    
             sTimerApp[4].u16HiMicroSeconds++;
+            return TRUE;
+        } else if (sTimerApp[4].u8Mode == 8 && sTimerApp[4].u16HiCount != sTimerApp[4].u16ReservedHiCount) {
+            //PWM4パルスカウンタの同期変更
+            sTimerApp[4].u16HiCount = sTimerApp[4].u16ReservedHiCount;
+            vAHI_TimerStartRepeat(4, sTimerApp[4].u16HiCount, sTimerApp[4].u16LoCount);
             return TRUE;
         }
         break;
