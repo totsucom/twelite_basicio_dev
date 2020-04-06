@@ -1,7 +1,7 @@
 /*
  * basicio.h
- * バージョン 3.1
- * 2020/3/5 totsucom
+ * バージョン 3.2
+ * 2020/4/6 totsucom
  */
 
 #ifndef __BASICIO_H

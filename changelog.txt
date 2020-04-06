@@ -1,21 +1,16 @@
 ******************
- Ver.3.1への変更点
+ Ver.3.2への変更点
 ******************
 
 1.バージョン定数
  + BASICIO_MAJOR_VER = 3
- + BASICIO_MINOR_VER = 1
+ + BASICIO_MINOR_VER = 2
 
-2.PWMパルス幅の変更品質を改善
-timer_attachPWM() と timer_attachPWMByHzDuty() に bSyncUpdate パラメータを追加した。これをTRUEにすることで
-timer_updatePWM() と timer_updatePWMDuty() によるパルス幅の変更が即座に行われず、PWMシグナルの周期の終了
-タイミングを待って更新されるようになり、サーボモータなどのシビアな制御でも安定して動作できるようにした。
+2.printf系関数の小数点表示(%f, %lf)に対応
 
 
 ********************************************
- 互換性、v3.0 のソースコードを v3.1 で使うには
+ 互換性、v3.1 のソースコードを v3.2 で使うには
 ********************************************
 
-1. timer_attachPWM() または timer_attachPWMByHzDuty() を使用している場合、末尾の bStartNow パラメータの前に、
-bSyncUpdate フラグを挿入する。これまでと互換性を保つ場合は bSyncUpdate=FALSE とする。
-
+特になし

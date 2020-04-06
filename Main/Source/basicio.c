@@ -1,7 +1,7 @@
 /*
  * basicio.h
- * バージョン 3.1
- * 2020/3/5 totsucom
+ * バージョン 3.2
+ * 2020/4/6 totsucom
  */
 
 #include "basicio.h"
@@ -3380,6 +3380,7 @@ void cbToCoNet_vMain(void)
 #define    WITH_SIGN_CHAR       (1<<5)  //符号付
 #define    LEFT_JUSTIFIED       (1<<6)  //指定桁数が表示桁数より大きいときに左詰め
 
+static bool_t put_doubleF(bool_t (*__putc)(char), double f, int32_t length, int32_t precision, int8_t sign, uint8_t flags);
 static bool_t put_integerD(bool_t (*__putc)(char), uint64_t n, int32_t length, int8_t sign, uint8_t flags);
 static bool_t put_integerX(bool_t (*__putc)(char), uint64_t n, int32_t length, uint8_t flags);
 static bool_t put_integerO(bool_t (*__putc)(char), uint64_t n, int32_t length, uint8_t flags);
@@ -3394,10 +3395,12 @@ bool_t myprintf(bool_t (*__putc)(char), const char *fmt, va_list ap) {
     for (;;) {
         uint64_t ui;
         int64_t i;
+        double f;
         uint8_t *s = NULL;
         uint8_t sign = 0;
         uint8_t flags = 0;
         int32_t length = 0;
+        int32_t precision = 3;
         int32_t tmp = 0;
         uint8_t int_type = 32;
 
@@ -3436,19 +3439,20 @@ bool_t myprintf(bool_t (*__putc)(char), const char *fmt, va_list ap) {
             }
         }
 
-        //浮動小数点は扱わない
-        /*if (*fmt == '.') {
+        //浮動小数点
+        if (*fmt == '.') {
             fmt++;
             if (*fmt == '*') {
                 fmt++;
-                precision = va_arg(ap, int);
+                precision = va_arg(ap, int32_t);
             }
             else {
+                precision = 0;
                 while (_isnumc(*fmt) ) {
                     precision = precision * 10 + _ctoi(*fmt++);
                 }
             }
-        }*/
+        }
 
         //型指定は ll (64bit)のみに対応
         while (strchr("hljzt", *fmt)) {
@@ -3475,6 +3479,15 @@ bool_t myprintf(bool_t (*__putc)(char), const char *fmt, va_list ap) {
         }
 
         switch (*fmt) {
+            case 'f':
+                f = va_arg(ap, double);
+                if (f < 0) {
+                    f = -f;
+                    sign = '-';
+                }
+                if (!put_doubleF(__putc, f, length, precision, sign, flags)) return FALSE;
+                break;
+
             case 'd':
             case 'i':
                 if (int_type == 64) {
@@ -3594,6 +3607,80 @@ bool_t myprintf(bool_t (*__putc)(char), const char *fmt, va_list ap) {
         }
 
         fmt++;
+    }
+    return TRUE;
+}
+
+/*
+1: 表示したい数値(正)
+2: 表示する長さ
+3: 小数点以下の長さ(精度)
+4: 符号 0,' ','+','-'
+5: フラグ
+*/
+static bool_t put_doubleF(bool_t (*__putc)(char), double f, int32_t length, int32_t precision, int8_t sign, uint8_t flags) {
+    uint64_t n = f;
+    //f -= n;
+
+    char buf[26]; //20桁 + ,が6個
+    uint8_t i = 0;
+    uint8_t pad = ' ';
+
+    //buf[]に表示内容の末尾から放り込む
+
+    //64bitの割り算は重い..はず
+    if ((n & 0xffffffff00000000) == 0) {
+        uint32_t m = (uint32_t)n;
+        do {
+            buf[i++] = (m % 10) + '0';
+            if( (flags & THOUSAND_GROUP) && (i & 3)==3) buf[i++] = ',';
+        } while (m /= 10);
+    } else {
+        do {
+            buf[i++] = (n % 10) + '0';
+            if( (flags & THOUSAND_GROUP) && (i & 3)==3) buf[i++] = ',';
+        } while (n /= 10);
+    }
+
+    length -= i;
+
+    if (precision > 0) length -= precision + 1;
+
+    if (!(flags & LEFT_JUSTIFIED)) {
+        if(flags & ZERO_PADDING) pad = '0';
+        while (length > 0) {
+            length--;
+            if (!__putc(pad)) return FALSE;
+        }
+    }
+
+    if (sign) {
+        if (!__putc(sign)) return FALSE;
+    }
+
+    while (i > 0) {
+        if (!__putc(buf[--i])) return FALSE;
+    }
+
+    if (precision > 0) {
+        if (!__putc('.')) return FALSE;
+
+
+
+        i = 0;
+        double mm=10.0;
+        while (precision-- > 0) {
+            if (!__putc(((int)(f*mm) % 10) + '0')) return FALSE;
+            if( (flags & THOUSAND_GROUP) && (i & 3)==3) {
+                if (!__putc(',')) return FALSE;
+            }
+            mm *= 10.0;
+        }
+    }
+
+    while (length > 0) {
+        length--;
+        if (!__putc(pad)) return FALSE;
     }
     return TRUE;
 }
